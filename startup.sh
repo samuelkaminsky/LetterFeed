@@ -6,7 +6,7 @@ apt-get update
 apt-get install -y ca-certificates curl gnupg git
 
 install -m 0755 -d /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor --yes -o /etc/apt/keyrings/docker.gpg
 chmod a+r /etc/apt/keyrings/docker.gpg
 
 echo \
@@ -23,7 +23,7 @@ cd /opt/letterfeed
 
 # Clone LetterFeed repository
 if [ ! -d ".git" ]; then
-  git clone https://github.com/LeonMusCoden/LetterFeed.git .
+  git clone https://github.com/samuelkaminsky/LetterFeed.git .
 fi
 
 # Configure environment
@@ -36,6 +36,9 @@ if ! grep -q "LETTERFEED_SECRET_KEY" .env; then
   SECRET=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 32 ; echo '')
   echo "LETTERFEED_SECRET_KEY=$SECRET" >> .env
 fi
+
+# Ensure frontend uses the correct backend URL in Docker Compose
+echo "LETTERFEED_BACKEND_URL=http://backend:8000" >> .env
 
 # Start LetterFeed
 docker compose up -d

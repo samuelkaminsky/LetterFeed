@@ -1,1 +1,21 @@
+# Environment and secrets
 .env
+.env.*
+!.env.example
+*.secret
+*.key
+
+# OS
+.DS_Store
+
+# Conversation logs / scratch files with potential secrets
+test.md
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Python
+__pycache__/
+*.pyc
