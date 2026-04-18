@@ -46,6 +46,17 @@ class Settings(BaseSettings):
             "MASTER_FEED_LIMIT", "LETTERFEED_MASTER_FEED_LIMIT"
         ),
     )
+    feed_retention_days: int | None = Field(
+        default=60,
+        validation_alias=AliasChoices(
+            "FEED_RETENTION_DAYS", "LETTERFEED_FEED_RETENTION_DAYS"
+        ),
+    )
+    smtp_server: str | None = None
+    smtp_port: int = 587
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    notification_email_to: str | None = None
 
 
 settings = Settings()

@@ -1,6 +1,9 @@
+from datetime import datetime, timedelta
+
 from nanoid import generate
 from sqlalchemy.orm import Session, joinedload
 
+from app.core.config import settings
 from app.core.logging import get_logger
 from app.models.entries import Entry
 from app.schemas.entries import EntryCreate
@@ -15,8 +18,14 @@ def get_all_entries(db: Session, skip: int = 0, limit: int | None = None):
         db.query(Entry)
         .options(joinedload(Entry.newsletter))
         .order_by(Entry.received_at.desc())
-        .offset(skip)
     )
+
+    if settings.feed_retention_days is not None:
+        cutoff_date = datetime.now() - timedelta(days=settings.feed_retention_days)
+        query = query.filter(Entry.received_at >= cutoff_date)
+
+    query = query.offset(skip)
+
     if limit is not None:
         query = query.limit(limit)
     return query.all()
@@ -33,8 +42,13 @@ def get_entries_by_newsletter(
         db.query(Entry)
         .order_by(Entry.received_at.desc())
         .filter(Entry.newsletter_id == newsletter_id)
-        .offset(skip)
     )
+
+    if settings.feed_retention_days is not None:
+        cutoff_date = datetime.now() - timedelta(days=settings.feed_retention_days)
+        query = query.filter(Entry.received_at >= cutoff_date)
+
+    query = query.offset(skip)
 
     if limit is not None:
         query = query.limit(limit)

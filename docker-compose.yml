@@ -8,6 +8,10 @@ services:
       - letterfeed_data:/data
     networks:
       - letterfeed_network
+    deploy:
+      resources:
+        limits:
+          memory: 350M
 
   frontend:
     image: ghcr.io/leonmuscoden/letterfeed-frontend:latest
@@ -20,6 +24,10 @@ services:
       - backend
     networks:
       - letterfeed_network
+    deploy:
+      resources:
+        limits:
+          memory: 200M
 
 volumes:
   letterfeed_data:

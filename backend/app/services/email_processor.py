@@ -1,15 +1,18 @@
 import email
+import fnmatch
 import imaplib
 import quopri
 import re
+import smtplib
 from email.header import decode_header, make_header
-from email.message import Message
+from email.message import EmailMessage, Message
 
 import nh3
 from bs4 import BeautifulSoup
 from readability import Document
 from sqlalchemy.orm import Session
 
+from app.core.config import settings as env_settings
 from app.core.logging import get_logger
 from app.crud.entries import create_entry, get_entry_by_message_id
 from app.crud.newsletters import create_newsletter, get_newsletters
@@ -147,6 +150,37 @@ def _extract_and_clean_html(raw_html_content: str) -> dict[str, str]:
     return {"title": title, "body": cleaned_body}
 
 
+def _send_notification_email(
+    newsletter_name: str, sender_email: str, rss_feed_url: str
+) -> None:
+    """Send an SMTP email notification when a new newsletter is detected."""
+    if not (env_settings.smtp_server and env_settings.notification_email_to):
+        return
+
+    try:
+        msg = EmailMessage()
+        msg["Subject"] = f"[LetterFeed] New Newsletter: {newsletter_name}"
+        # We assume the IMAP user is the From address for notification, 
+        # unless SMTP username is an email and preferred, but IMAP user usually works.
+        msg["From"] = env_settings.imap_username
+        msg["To"] = env_settings.notification_email_to
+
+        content = f"""New newsletter detected!
+
+Name: {newsletter_name}
+Sender: {sender_email}
+RSS Feed: {rss_feed_url}"""
+        msg.set_content(content)
+
+        with smtplib.SMTP(env_settings.smtp_server, env_settings.smtp_port) as server:
+            server.starttls()
+            if env_settings.smtp_username and env_settings.smtp_password:
+                server.login(env_settings.smtp_username, env_settings.smtp_password)
+            server.send_message(msg)
+        logger.info(f"Notification email sent to {env_settings.notification_email_to}")
+    except Exception as e:
+        logger.error(f"Failed to send notification email: {e}")
+
 def _auto_add_newsletter(
     db: Session,
     sender: str,
@@ -162,7 +196,12 @@ def _auto_add_newsletter(
         name=newsletter_name,
         sender_emails=[sender],
     )
-    return create_newsletter(db, new_newsletter_schema)
+    new_nl = create_newsletter(db, new_newsletter_schema)
+
+    rss_feed_url = f"{env_settings.app_base_url.rstrip('/')}/api/feeds/{new_nl.id}"
+    _send_notification_email(new_nl.name, sender, rss_feed_url)
+
+    return new_nl
 
 
 def _process_single_email(
@@ -195,6 +234,14 @@ def _process_single_email(
     logger.debug(f"Processing email from {sender} with subject '{msg['Subject']}'")
 
     newsletter = sender_map.get(sender)
+    
+    # If no exact match, check for wildcard matches
+    if not newsletter:
+        for sender_email, nl in sender_map.items():
+            if fnmatch.fnmatch(sender, sender_email):
+                newsletter = nl
+                break
+
     if not newsletter and settings.auto_add_new_senders:
         newsletter = _auto_add_newsletter(db, sender, msg, settings)
         sender_map[sender] = newsletter
