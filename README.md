@@ -20,7 +20,7 @@ It periodically scans your email inbox via IMAP for new emails from the senders 
 1.  **Clone the repository:**
 
     ```bash
-    git clone https://github.com/LeonMusCoden/letterfeed.git
+    git clone https://github.com/samuelkaminsky/LetterFeed.git
     cd letterfeed
     ```
 
