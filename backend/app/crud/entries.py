@@ -62,6 +62,17 @@ def get_entry_by_message_id(db: Session, message_id: str):
     return db.query(Entry).filter(Entry.message_id == message_id).first()
 
 
+def get_latest_entry_timestamp(
+    db: Session, newsletter_id: str | None = None
+) -> datetime | None:
+    """Retrieve the timestamp of the latest entry."""
+    query = db.query(Entry.received_at).order_by(Entry.received_at.desc())
+    if newsletter_id:
+        query = query.filter(Entry.newsletter_id == newsletter_id)
+    result = query.first()
+    return result[0] if result else None
+
+
 def create_entry(db: Session, entry: EntryCreate, newsletter_id: str):
     """Create a new entry for a newsletter."""
     logger.info(
