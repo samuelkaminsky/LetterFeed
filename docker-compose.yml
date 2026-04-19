@@ -1,6 +1,6 @@
 services:
   backend:
-    image: ghcr.io/leonmuscoden/letterfeed-backend:latest
+    image: ghcr.io/samuelkaminsky/letterfeed-backend:latest
     restart: unless-stopped
     env_file:
       - .env
@@ -14,7 +14,7 @@ services:
           memory: 350M
 
   frontend:
-    image: ghcr.io/leonmuscoden/letterfeed-frontend:latest
+    image: ghcr.io/samuelkaminsky/letterfeed-frontend:latest
     restart: unless-stopped
     env_file:
       - .env
