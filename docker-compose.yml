@@ -29,6 +29,19 @@ services:
         limits:
           memory: 200M
 
+  watchtower:
+    image: containrrr/watchtower:latest
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: --interval 300 --cleanup
+    networks:
+      - letterfeed_network
+    deploy:
+      resources:
+        limits:
+          memory: 30M
+
 volumes:
   letterfeed_data:
 
