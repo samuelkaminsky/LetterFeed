@@ -19,6 +19,11 @@ if config.config_file_name is not None:
 from app.core.database import Base
 from app.core.config import settings as app_settings
 
+# Import models so they are registered with Base.metadata
+from app.models.entries import Entry
+from app.models.newsletters import Newsletter
+from app.models.settings import Settings
+
 target_metadata = Base.metadata
 
 # other values from the config, defined by the needs of env.py,

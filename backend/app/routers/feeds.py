@@ -41,7 +41,10 @@ def get_master_feed(
     return Response(
         content=feed, 
         media_type="application/atom+xml",
-        headers={"ETag": etag}
+        headers={
+            "ETag": etag,
+            "Cache-Control": "public, max-age=60"
+        }
     )
 
 
@@ -78,5 +81,8 @@ def get_newsletter_feed(
     return Response(
         content=feed, 
         media_type="application/atom+xml",
-        headers={"ETag": etag}
+        headers={
+            "ETag": etag,
+            "Cache-Control": "public, max-age=60"
+        }
     )
