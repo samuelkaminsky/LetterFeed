@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect } from "react"
 
 import withAuth from "@/components/withAuth"
 import {
@@ -28,7 +28,7 @@ function LetterFeedApp() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
   const [editingNewsletter, setEditingNewsletter] = useState<Newsletter | null>(null)
 
-  const fetchData = useCallback(async () => {
+  const fetchData = async () => {
     try {
       const [newslettersData, settingsData, foldersData] = await Promise.all([
         getNewsletters(),
@@ -43,11 +43,11 @@ function LetterFeedApp() {
     } finally {
       setIsLoading(false)
     }
-  }, [])
+  }
 
   useEffect(() => {
     fetchData()
-  }, [fetchData])
+  }, [])
 
   const openEditDialog = (newsletter: Newsletter) => {
     setEditingNewsletter(newsletter)

@@ -1,6 +1,6 @@
 from nanoid import generate
 from sqlalchemy import func, or_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.core.logging import get_logger
 from app.models.entries import Entry
@@ -18,6 +18,7 @@ def get_newsletter_by_identifier(db: Session, identifier: str):
         .outerjoin(Entry, Newsletter.id == Entry.newsletter_id)
         .filter(or_(Newsletter.id == identifier, Newsletter.slug == identifier))
         .group_by(Newsletter.id)
+        .options(selectinload(Newsletter.senders))
         .first()
     )
     if result:
@@ -40,6 +41,7 @@ def get_newsletters(db: Session, skip: int = 0, limit: int = 100):
         .outerjoin(Entry, Newsletter.id == Entry.newsletter_id)
         .group_by(Newsletter.id)
         .order_by(Newsletter.id)
+        .options(selectinload(Newsletter.senders))
         .offset(skip)
         .limit(limit)
         .all()
