@@ -1,20 +1,46 @@
 ## Gemini Added Memories
 - ./backend contains the FastAPI backend. It uses uv as package manager.
 - ./frontend contains the TS React frontend. It uses ShadCN components.
+- **Next.js React Compiler**: Enabling `experimental: { reactCompiler: true }` in `next.config.ts` requires `babel-plugin-react-compiler` to be installed in `package.json` to avoid production build failures.
+- **Alembic Migrations**: When adding new database models or running `alembic revision --autogenerate`, ensure that the models are explicitly imported in `backend/alembic/env.py`. Failure to do so will result in Alembic thinking the tables were deleted and generating a migration that drops the entire database.
 
-## Useful commands:
+## Project Management Skill
 
-Run `make` with these targets:
-  install                     Install all dependencies for frontend and backend
-  dev                         Start the development servers for frontend and backend
-  test                        Run tests for frontend and backend
-  lint                        Lint the frontend and backend code
-  docker-build                Build the production Docker images
-  docker-up                   Start the production application with Docker Compose
-  docker-down                 Stop the production application
-  docker-dev-up               Start the development environment with Docker Compose
-  docker-dev-down             Stop the development environment
-  clean                       Remove generated files and caches
+**Core Philosophy**: All infrastructure and architectural decisions must prioritize maximum efficiency and ensure the project remains completely free to run on Google Cloud Platform's free tier. Avoid any solutions that introduce unnecessary performance overhead or incur financial costs.
+
+When asked to manage the project, build, test, or run tasks, use the following standard operating procedures:
+
+### 1. Running the Project
+- **Local Development**: Run `make dev` to start the FastAPI backend and React frontend development servers concurrently.
+- **Docker Development**: Run `make docker-dev-up` to start the development environment using Docker Compose. Run `make docker-dev-down` to stop it.
+
+### 2. Managing Dependencies
+- **Backend**: We use `uv`. To add a package, run `cd backend && uv add <package>`. To sync, run `cd backend && uv sync --all-extras` (or `make install-backend`).
+- **Frontend**: We use `npm`. To add a package, run `cd frontend && npm install <package>`. To install all, run `make install-frontend`.
+- **Full Install**: Run `make install` to install all dependencies for both frontend and backend.
+
+### 3. Database Migrations (Backend)
+We use SQLAlchemy and Alembic for the backend.
+- **Generate a migration**: After modifying models, run `cd backend && uv run alembic revision --autogenerate -m "description_of_change"`.
+- **Apply migrations**: Run `cd backend && uv run alembic upgrade head`.
+
+### 4. Code Quality & Testing
+- **Testing**: Run `make test` to execute both backend (`pytest`) and frontend (`npm test`) tests.
+- **Linting**: Run `make lint` to lint both backend (`ruff`) and frontend (`npm run lint`).
+- Ensure all tests and linting pass before suggesting a commit.
+
+### 5. CI/CD & Deployment Process
+The project is deployed using GitHub Actions and GCP:
+- **CI/CD Pipeline**: Pushing to the `master` branch or creating a release triggers GitHub Actions (`.github/workflows/ci.yml`) to run linting and tests. It also builds and pushes Docker images to GitHub Container Registry (`ghcr.io/samuelkaminsky/letterfeed-backend` and `ghcr.io/samuelkaminsky/letterfeed-frontend`).
+- **Server Deployment**: A GCP Compute Engine instance uses `startup.sh` to set up the environment. It clones the repository into `/opt/letterfeed`, fetches the `.env` file from Google Secret Manager (`letterfeed-env`), and starts the production application using `docker compose up -d`.
+- **Continuous Deployment (Watchtower)**: The production `docker-compose.yml` includes a Watchtower service that polls the GitHub Container Registry every 5 minutes (`--interval 300`). When it detects updated images pushed by the CI/CD pipeline, it automatically pulls them, gracefully restarts the affected containers, and cleans up old images (`--cleanup`), enabling a zero-touch continuous deployment loop.
+- **Manual Production Docker**: If running or testing production manually, you can use:
+  - **Build**: `make docker-build`
+  - **Start**: `make docker-up`
+  - **Stop**: `make docker-down`
+
+### 6. Cleaning Up
+- Run `make clean` to remove all generated files, caches (`.pytest_cache`, `.ruff_cache`, `__pycache__`), and dependencies (`.venv`, `node_modules`, `.next`).
 
 ## Writing Tests
 
@@ -26,10 +52,6 @@ Run `make` with these targets:
 ## Git Repo
 
 The main branch for this project is called "master"
-
-## Backend
-
-Of course. Here is a similar markdown for an AI agent on how to write Python code for a backend with FastAPI, SQLAlchemy, and Alembic:
 
 ## Backend
 
