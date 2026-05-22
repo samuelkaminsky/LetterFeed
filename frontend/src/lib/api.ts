@@ -46,6 +46,7 @@ export interface Settings {
     email_check_interval: number;
     auto_add_new_senders: boolean;
     locked_fields: string[];
+    master_feed_token?: string | null;
 }
 
 export interface SettingsCreate {
@@ -69,13 +70,8 @@ async function fetcher<T>(
     returnEmptyArrayOnFailure: boolean = false
 ): Promise<T> {
     try {
-        const token = localStorage.getItem("authToken");
-        if (token) {
-            options.headers = {
-                ...options.headers,
-                'Authorization': `Bearer ${token}`,
-            };
-        }
+        // Enforce same-origin credentials to automatically send HttpOnly cookies
+        options.credentials = 'same-origin';
 
         const response = await fetch(url, options);
         if (!response.ok) {
@@ -87,11 +83,6 @@ async function fetcher<T>(
                 }
             } catch (e) { // eslint-disable-line @typescript-eslint/no-unused-vars
                 // ignore error if response is not JSON
-            }
-
-            if (response.status === 401) {
-                localStorage.removeItem("authToken");
-                // Do not redirect here. The AuthContext will handle it.
             }
 
             toast.error(errorText);
@@ -125,21 +116,27 @@ export async function login(username: string, password: string): Promise<void> {
     formData.append('username', username);
     formData.append('password', password);
 
-    try {
-        const response = await fetcher<{ access_token: string }>(`${API_BASE_URL}/auth/login`, {
-            method: 'POST',
-            body: formData,
-            headers: {
-                'Content-Type': 'application/x-www-form-urlencoded',
-            },
-        }, "Login failed");
+    await fetcher<{ access_token: string }>(`${API_BASE_URL}/auth/login`, {
+        method: 'POST',
+        body: formData,
+        headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+        },
+    }, "Login failed");
+}
 
-        if (response.access_token) {
-            localStorage.setItem("authToken", response.access_token);
-        }
-    } catch (error) {
-        localStorage.removeItem("authToken");
-        throw error;
+export async function logout(): Promise<void> {
+    await fetcher<void>(`${API_BASE_URL}/auth/logout`, {
+        method: 'POST',
+    }, "Logout failed");
+}
+
+export async function verifyAuth(): Promise<boolean> {
+    try {
+        const response = await fetch(`${API_BASE_URL}/auth/verify`, { credentials: 'same-origin' });
+        return response.ok;
+    } catch {
+        return false;
     }
 }
 
@@ -205,10 +202,12 @@ export async function processEmails(): Promise<{ message: string }> {
 }
 
 export function getFeedUrl(newsletter: Newsletter): string {
-    const feedIdentifier = newsletter.slug || newsletter.id;
-    return `${API_BASE_URL}/feeds/${feedIdentifier}`;
+    return `${API_BASE_URL}/feeds/${newsletter.id}`;
 }
 
-export function getMasterFeedUrl(): string {
+export function getMasterFeedUrl(masterFeedToken?: string | null): string {
+    if (masterFeedToken) {
+        return `${API_BASE_URL}/feeds/all?token=${masterFeedToken}`;
+    }
     return `${API_BASE_URL}/feeds/all`;
 }

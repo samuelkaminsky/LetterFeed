@@ -168,3 +168,90 @@ def test_auth_with_env_vars(client: TestClient):
         response = client.get("/auth/status")
         assert response.status_code == 200
         assert response.json() == {"auth_enabled": True}
+
+
+def test_login_sets_cookie(client: TestClient, db_session: Session):
+    """Test that /auth/login sets the authToken cookie."""
+    settings_data = SettingsCreate(
+        imap_server="test.com",
+        imap_username="test",
+        imap_password="password",
+        auth_username="admin",
+        auth_password="password",
+    )
+    create_or_update_settings(db_session, settings_data)
+
+    login_data = {"username": "admin", "password": "password"}
+    response = client.post("/auth/login", data=login_data)
+    assert response.status_code == 200
+    assert "authToken" in response.cookies
+
+
+def test_protected_route_with_cookie_success(client: TestClient, db_session: Session):
+    """Test accessing a protected route using only the authToken cookie."""
+    settings_data = SettingsCreate(
+        imap_server="test.com",
+        imap_username="test",
+        imap_password="password",
+        auth_username="admin",
+        auth_password="password",
+    )
+    create_or_update_settings(db_session, settings_data)
+
+    # First, log in to get a token and set cookie
+    login_data = {"username": "admin", "password": "password"}
+    response = client.post("/auth/login", data=login_data)
+    assert "authToken" in response.cookies
+
+    # Then access the protected route without authorization headers, relying on cookies
+    response = client.get("/newsletters")
+    assert response.status_code == 200
+
+
+def test_logout_endpoint(client: TestClient, db_session: Session):
+    """Test that /auth/logout deletes the authToken cookie."""
+    settings_data = SettingsCreate(
+        imap_server="test.com",
+        imap_username="test",
+        imap_password="password",
+        auth_username="admin",
+        auth_password="password",
+    )
+    create_or_update_settings(db_session, settings_data)
+
+    # First, log in
+    login_data = {"username": "admin", "password": "password"}
+    response = client.post("/auth/login", data=login_data)
+    assert "authToken" in response.cookies
+
+    # Log out
+    response = client.post("/auth/logout")
+    assert response.status_code == 200
+    # The cookie should either be deleted or set to an empty string with an expired age
+    cookie = response.cookies.get("authToken")
+    assert cookie is None or cookie == ""
+
+
+def test_verify_auth_endpoint(client: TestClient, db_session: Session):
+    """Test the /auth/verify endpoint behavior."""
+    settings_data = SettingsCreate(
+        imap_server="test.com",
+        imap_username="test",
+        imap_password="password",
+        auth_username="admin",
+        auth_password="password",
+    )
+    create_or_update_settings(db_session, settings_data)
+
+    # Unauthenticated verify should fail (returns 401)
+    response = client.get("/auth/verify")
+    assert response.status_code == 401
+
+    # Authenticated verify should succeed
+    login_data = {"username": "admin", "password": "password"}
+    client.post("/auth/login", data=login_data)
+    response = client.get("/auth/verify")
+    assert response.status_code == 200
+    assert response.json()["authenticated"] is True
+    assert response.json()["username"] == "admin"
+

@@ -19,7 +19,6 @@ describe("AuthContext", () => {
 
   beforeEach(() => {
     jest.clearAllMocks()
-    localStorage.clear()
     mockedUseRouter.mockReturnValue({ push })
     consoleError.mockClear()
   })
@@ -52,10 +51,9 @@ describe("AuthContext", () => {
     })
   })
 
-  it("authenticates if auth is enabled and token is valid", async () => {
+  it("authenticates if auth is enabled and token verification succeeds", async () => {
     mockedApi.getAuthStatus.mockResolvedValue({ auth_enabled: true })
-    mockedApi.getSettings.mockResolvedValue({} as api.Settings) // Mock a successful protected call
-    localStorage.setItem("authToken", "valid-token")
+    mockedApi.verifyAuth.mockResolvedValue(true)
     render(
       <AuthProvider>
         <AuthContext.Consumer>
@@ -78,28 +76,9 @@ describe("AuthContext", () => {
     })
   })
 
-  it("does not authenticate if auth is enabled and no token", async () => {
+  it("does not authenticate if auth is enabled and token verification fails", async () => {
     mockedApi.getAuthStatus.mockResolvedValue({ auth_enabled: true })
-    render(
-      <AuthProvider>
-        <AuthContext.Consumer>
-          {(value) => (
-            <span>
-              Is Authenticated: {value?.isAuthenticated.toString()}
-            </span>
-          )}
-        </AuthContext.Consumer>
-      </AuthProvider>
-    )
-    await waitFor(() => {
-      expect(screen.getByText("Is Authenticated: false")).toBeInTheDocument()
-    })
-  })
-
-  it("does not authenticate if token is invalid", async () => {
-    mockedApi.getAuthStatus.mockResolvedValue({ auth_enabled: true })
-    mockedApi.getSettings.mockRejectedValue(new Error("Invalid token")) // Mock a failed protected call
-    localStorage.setItem("authToken", "invalid-token")
+    mockedApi.verifyAuth.mockResolvedValue(false)
     render(
       <AuthProvider>
         <AuthContext.Consumer>
@@ -118,6 +97,7 @@ describe("AuthContext", () => {
 
   it("login works correctly", async () => {
     mockedApi.getAuthStatus.mockResolvedValue({ auth_enabled: true })
+    mockedApi.verifyAuth.mockResolvedValue(false)
     mockedApi.login.mockResolvedValue()
     render(
       <AuthProvider>
@@ -146,8 +126,8 @@ describe("AuthContext", () => {
 
   it("logout works correctly", async () => {
     mockedApi.getAuthStatus.mockResolvedValue({ auth_enabled: true })
-    mockedApi.getSettings.mockResolvedValue({} as api.Settings)
-    localStorage.setItem("authToken", "valid-token")
+    mockedApi.verifyAuth.mockResolvedValue(true)
+    mockedApi.logout.mockResolvedValue()
     render(
       <AuthProvider>
         <AuthContext.Consumer>
@@ -167,9 +147,9 @@ describe("AuthContext", () => {
     })
     fireEvent.click(screen.getByText("Logout"))
     await waitFor(() => {
+      expect(mockedApi.logout).toHaveBeenCalled()
       expect(screen.getByText("Is Authenticated: false")).toBeInTheDocument()
       expect(push).toHaveBeenCalledWith("/login")
-      expect(localStorage.getItem("authToken")).toBeNull()
     })
   })
 })

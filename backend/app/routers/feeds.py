@@ -24,10 +24,23 @@ def _generate_etag(identifier: str, timestamp) -> str:
 @router.get("/feeds/all")
 def get_master_feed(
     request: Request,
+    token: str | None = None,
     db: Session = Depends(get_db),
     if_none_match: str | None = Header(default=None),
 ):
     """Generate a master Atom feed for all newsletters."""
+    # Authenticate the master feed if auth is enabled
+    import secrets
+
+    from app.core.auth import is_auth_enabled
+    from app.crud.settings import get_settings
+
+    if is_auth_enabled(db):
+        settings = get_settings(db)
+        if not token or not settings.master_feed_token or not secrets.compare_digest(token, settings.master_feed_token):
+            logger.warning("Unauthorized attempt to access master feed (invalid or missing token)")
+            raise HTTPException(status_code=401, detail="Unauthorized: Invalid or missing token")
+
     logger.info("Generating master feed for all newsletters")
     
     latest_timestamp = get_latest_entry_timestamp(db)
@@ -57,6 +70,10 @@ def get_newsletter_feed(
     if_none_match: str | None = Header(default=None),
 ):
     """Generate an Atom feed for a specific newsletter."""
+    # Secure feeds: Restrict RSS feeds strictly to the cryptographically secure ID (NanoID)
+    # to prevent slug guessing when authentication is enabled.
+    from app.core.auth import is_auth_enabled
+    
     logger.info(f"Generating feed for newsletter with identifier={feed_identifier}")
     
     newsletter = get_newsletter_by_identifier(db, feed_identifier)
@@ -66,6 +83,15 @@ def get_newsletter_feed(
         )
         raise HTTPException(status_code=404, detail="Newsletter not found")
 
+    if is_auth_enabled(db) and newsletter.slug == feed_identifier:
+        logger.warning(
+            f"Blocked guessable slug-based feed access for slug '{feed_identifier}'."
+        )
+        raise HTTPException(
+            status_code=403,
+            detail="Forbidden: Guessable slug-based feed access is disabled for security. Please use the secure feed ID."
+        )
+
     latest_timestamp = get_latest_entry_timestamp(db, newsletter_id=newsletter.id)
     etag = _generate_etag(newsletter.id, latest_timestamp)
     
@@ -73,7 +99,8 @@ def get_newsletter_feed(
         logger.debug("Feed unmodified, returning 304")
         return Response(status_code=304)
 
-    feed = generate_feed(db, feed_identifier, request=request)
+    # For generate_feed, always pass the secure newsletter ID to prevent any internal slug mapping issues
+    feed = generate_feed(db, newsletter.id, request=request)
     if not feed:
         raise HTTPException(status_code=404, detail="Newsletter not found")
 

@@ -29,6 +29,7 @@ class Settings(SettingsBase):
     id: int
     imap_password: str | None = Field(None, exclude=True)
     auth_password: str | None = Field(None, exclude=True)
+    master_feed_token: str | None = None
     locked_fields: List[str] = []
 
     model_config = ConfigDict(from_attributes=True)

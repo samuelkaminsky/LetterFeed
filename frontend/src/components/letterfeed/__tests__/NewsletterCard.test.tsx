@@ -40,7 +40,7 @@ describe("NewsletterCard", () => {
     // Check for the RSS feed link
     const feedLink = screen.getByRole("link")
     expect(feedLink).toHaveAttribute("href", "http://mock-api/feeds/tech-weekly")
-    expect(feedLink).toHaveTextContent("http://mock-api/feeds/tech-weekly")
+    expect(screen.getByText("http://mock-api/feeds/tech-weekly")).toBeInTheDocument()
   })
 
   it('calls the onEdit function with the correct newsletter when the edit button is clicked', () => {

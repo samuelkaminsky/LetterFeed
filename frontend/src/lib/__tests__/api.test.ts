@@ -10,6 +10,8 @@ import {
   processEmails,
   getFeedUrl,
   login,
+  logout,
+  verifyAuth,
   NewsletterCreate,
   NewsletterUpdate,
   SettingsCreate,
@@ -52,11 +54,10 @@ describe("API Functions", () => {
     // Reset the mock before each test
     ;(fetch as jest.Mock).mockClear()
     ;(toast.error as jest.Mock).mockClear()
-    localStorage.clear()
   })
 
   describe("login", () => {
-    it("should login successfully and store the token", async () => {
+    it("should login successfully and trigger fetching", async () => {
       const mockToken = { access_token: "test-token", token_type: "bearer" }
       mockFetch(mockToken)
 
@@ -66,31 +67,65 @@ describe("API Functions", () => {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({ username: "user", password: "pass" }),
+        credentials: "same-origin",
       })
-      expect(localStorage.getItem("authToken")).toBe("test-token")
       expect(toast.error).not.toHaveBeenCalled()
     })
 
-    it("should throw an error and clear token if login fails", async () => {
+    it("should throw an error if login fails", async () => {
       mockFetchError({ detail: "Incorrect username or password" }, "Unauthorized", 401)
-      localStorage.setItem("authToken", "old-token")
 
       await expect(login("user", "wrong-pass")).rejects.toThrow("Incorrect username or password")
-      expect(localStorage.getItem("authToken")).toBeNull()
       expect(toast.error).toHaveBeenCalledWith("Incorrect username or password")
     })
   })
 
+  describe("logout", () => {
+    it("should post to /auth/logout successfully", async () => {
+      mockFetch({ message: "Successfully logged out" })
+
+      await logout()
+
+      expect(fetch).toHaveBeenCalledWith(`${API_BASE_URL}/auth/logout`, {
+        method: "POST",
+        credentials: "same-origin",
+      })
+      expect(toast.error).not.toHaveBeenCalled()
+    })
+  })
+
+  describe("verifyAuth", () => {
+    it("should return true if verification succeeds", async () => {
+      ;(fetch as jest.Mock).mockResolvedValueOnce({
+        ok: true,
+      })
+
+      const isValid = await verifyAuth()
+      expect(isValid).toBe(true)
+      expect(fetch).toHaveBeenCalledWith(`${API_BASE_URL}/auth/verify`, {
+        credentials: "same-origin",
+      })
+    })
+
+    it("should return false if verification fails", async () => {
+      ;(fetch as jest.Mock).mockResolvedValueOnce({
+        ok: false,
+      })
+
+      const isValid = await verifyAuth()
+      expect(isValid).toBe(false)
+    })
+  })
+
   describe("getNewsletters", () => {
-    it("should fetch newsletters successfully with auth token", async () => {
-      localStorage.setItem("authToken", "test-token")
+    it("should fetch newsletters successfully with same-origin credentials", async () => {
       const mockNewsletters = [{ id: 1, name: "Newsletter 1" }]
       mockFetch(mockNewsletters)
 
       const newsletters = await getNewsletters()
       expect(newsletters).toEqual(mockNewsletters)
       expect(fetch).toHaveBeenCalledWith(`${API_BASE_URL}/newsletters`, {
-        headers: { Authorization: "Bearer test-token" },
+        credentials: "same-origin",
       })
       expect(toast.error).not.toHaveBeenCalled()
     })
@@ -98,13 +133,12 @@ describe("API Functions", () => {
 
   describe("createNewsletter", () => {
     it("should create a newsletter successfully", async () => {
-      localStorage.setItem("authToken", "test-token")
       const newNewsletter: NewsletterCreate = { name: "New Newsletter", sender_emails: ["test@example.com"], extract_content: false }
       const createdNewsletter = {
-        id: 3,
+        id: "3",
         ...newNewsletter,
         is_active: true,
-        senders: [{ id: 1, email: "test@example.com", newsletter_id: 3 }],
+        senders: [{ id: "1", email: "test@example.com", newsletter_id: "3" }],
         entries_count: 0,
       }
       mockFetch(createdNewsletter)
@@ -113,8 +147,9 @@ describe("API Functions", () => {
       expect(result).toEqual(createdNewsletter)
       expect(fetch).toHaveBeenCalledWith(`${API_BASE_URL}/newsletters`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: "Bearer test-token" },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(newNewsletter),
+        credentials: "same-origin",
       })
       expect(toast.error).not.toHaveBeenCalled()
     })
@@ -122,7 +157,6 @@ describe("API Functions", () => {
 
   describe("updateNewsletter", () => {
     it("should update a newsletter successfully", async () => {
-      localStorage.setItem("authToken", "test-token")
       const updatedNewsletter: NewsletterUpdate = { name: "Updated Newsletter", sender_emails: ["updated@example.com"], extract_content: true }
       const newsletterId = "1"
       const returnedNewsletter = {
@@ -138,8 +172,9 @@ describe("API Functions", () => {
       expect(result).toEqual(returnedNewsletter)
       expect(fetch).toHaveBeenCalledWith(`${API_BASE_URL}/newsletters/${newsletterId}`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json", Authorization: "Bearer test-token" },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(updatedNewsletter),
+        credentials: "same-origin",
       })
       expect(toast.error).not.toHaveBeenCalled()
     })
@@ -147,14 +182,13 @@ describe("API Functions", () => {
 
   describe("deleteNewsletter", () => {
     it("should delete a newsletter successfully", async () => {
-      localStorage.setItem("authToken", "test-token")
       const newsletterId = "1"
-      mockFetch({}, true) // Successful deletion might not have a body
+      mockFetch({}, true)
 
       await deleteNewsletter(newsletterId)
       expect(fetch).toHaveBeenCalledWith(`${API_BASE_URL}/newsletters/${newsletterId}`, {
         method: "DELETE",
-        headers: { Authorization: "Bearer test-token" },
+        credentials: "same-origin",
       })
       expect(toast.error).not.toHaveBeenCalled()
     })
@@ -162,7 +196,6 @@ describe("API Functions", () => {
 
   describe("getSettings", () => {
     it("should fetch settings successfully", async () => {
-      localStorage.setItem("authToken", "test-token")
       const mockSettings = {
         id: 1,
         imap_server: "imap.example.com",
@@ -179,7 +212,7 @@ describe("API Functions", () => {
       const settings = await getSettings()
       expect(settings).toEqual(mockSettings)
       expect(fetch).toHaveBeenCalledWith(`${API_BASE_URL}/imap/settings`, {
-        headers: { Authorization: "Bearer test-token" },
+        credentials: "same-origin",
       })
       expect(toast.error).not.toHaveBeenCalled()
     })
@@ -187,7 +220,6 @@ describe("API Functions", () => {
 
   describe("updateSettings", () => {
     it("should update settings successfully", async () => {
-      localStorage.setItem("authToken", "test-token")
       const newSettings: SettingsCreate = {
         imap_server: "new.imap.com",
         imap_username: "newuser@example.com",
@@ -205,8 +237,9 @@ describe("API Functions", () => {
       expect(result).toEqual(updatedSettings)
       expect(fetch).toHaveBeenCalledWith(`${API_BASE_URL}/imap/settings`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: "Bearer test-token" },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(newSettings),
+        credentials: "same-origin",
       })
       expect(toast.error).not.toHaveBeenCalled()
     })
@@ -214,14 +247,13 @@ describe("API Functions", () => {
 
   describe("getImapFolders", () => {
     it("should fetch IMAP folders successfully", async () => {
-      localStorage.setItem("authToken", "test-token")
       const mockFolders = ["INBOX", "Sent", "Archive"]
       mockFetch(mockFolders)
 
       const folders = await getImapFolders()
       expect(folders).toEqual(mockFolders)
       expect(fetch).toHaveBeenCalledWith(`${API_BASE_URL}/imap/folders`, {
-        headers: { Authorization: "Bearer test-token" },
+        credentials: "same-origin",
       })
       expect(toast.error).not.toHaveBeenCalled()
     })
@@ -229,7 +261,6 @@ describe("API Functions", () => {
 
   describe("testImapConnection", () => {
     it("should test IMAP connection successfully", async () => {
-      localStorage.setItem("authToken", "test-token")
       const mockResponse = { message: "Connection successful" }
       mockFetch(mockResponse)
 
@@ -237,7 +268,7 @@ describe("API Functions", () => {
       expect(result).toEqual(mockResponse)
       expect(fetch).toHaveBeenCalledWith(`${API_BASE_URL}/imap/test`, {
         method: "POST",
-        headers: { Authorization: "Bearer test-token" },
+        credentials: "same-origin",
       })
       expect(toast.error).not.toHaveBeenCalled()
     })
@@ -245,7 +276,6 @@ describe("API Functions", () => {
 
   describe("processEmails", () => {
     it("should process emails successfully", async () => {
-      localStorage.setItem("authToken", "test-token")
       const mockResponse = { message: "Emails processed" }
       mockFetch(mockResponse)
 
@@ -253,14 +283,14 @@ describe("API Functions", () => {
       expect(result).toEqual(mockResponse)
       expect(fetch).toHaveBeenCalledWith(`${API_BASE_URL}/imap/process`, {
         method: "POST",
-        headers: { Authorization: "Bearer test-token" },
+        credentials: "same-origin",
       })
       expect(toast.error).not.toHaveBeenCalled()
     })
   })
 
   describe("getFeedUrl", () => {
-    it("should return the correct feed URL using slug if available", () => {
+    it("should return the correct feed URL using id even if slug is available", () => {
       const newsletter: Newsletter = {
         id: "123",
         slug: "my-newsletter",
@@ -270,12 +300,12 @@ describe("API Functions", () => {
         entries_count: 0,
         extract_content: false,
       }
-      const expectedUrl = `${API_BASE_URL}/feeds/my-newsletter`
+      const expectedUrl = `${API_BASE_URL}/feeds/123`
       const url = getFeedUrl(newsletter)
       expect(url).toBe(expectedUrl)
     })
 
-    it("should return the correct feed URL using id if slug is not available", () => {
+    it("should return the correct feed URL using id when slug is not available", () => {
       const newsletter: Newsletter = {
         id: "123",
         slug: null,

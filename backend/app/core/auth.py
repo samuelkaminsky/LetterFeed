@@ -2,7 +2,7 @@ import secrets
 from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from sqlalchemy.orm import Session
@@ -61,6 +61,7 @@ def create_access_token(data: dict, expires_delta: timedelta | None = None):
 
 
 def protected_route(
+    request: Request,
     token: str | None = Depends(oauth2_scheme),
     db: Session = Depends(get_db),
 ):
@@ -70,6 +71,10 @@ def protected_route(
     # If no auth credentials are set up, access is allowed.
     if not auth_creds.get("username") or not auth_creds.get("password_hash"):
         return
+
+    # Check HttpOnly cookies if Authorization header token is missing
+    if token is None:
+        token = request.cookies.get("authToken")
 
     if token is None:
         raise HTTPException(

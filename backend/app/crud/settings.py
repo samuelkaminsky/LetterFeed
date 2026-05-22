@@ -1,6 +1,7 @@
 from sqlalchemy.orm import Session
 
 from app.core.config import settings as env_settings
+from app.core.encryption import ENCRYPTION_PREFIX, decrypt_string, encrypt_string
 from app.core.hashing import get_password_hash
 from app.core.logging import get_logger
 from app.models.settings import Settings as SettingsModel
@@ -32,6 +33,13 @@ def create_initial_settings(db: Session):
         if "auth_password" in env_data_for_db:
             del env_data_for_db["auth_password"]
 
+        # Encrypt the initial IMAP password if provided via environment
+        if "imap_password" in env_data_for_db and env_data_for_db["imap_password"]:
+            env_data_for_db["imap_password"] = encrypt_string(env_data_for_db["imap_password"])
+
+        import secrets
+        env_data_for_db["master_feed_token"] = secrets.token_hex(16)
+
         db_settings = SettingsModel(**env_data_for_db)
         db.add(db_settings)
         db.commit()
@@ -48,6 +56,18 @@ def get_settings(db: Session, with_password: bool = False) -> SettingsSchema:
         # This should not happen if create_initial_settings is called at startup.
         raise RuntimeError("Settings not initialized.")
 
+    # Ensure master_feed_token is present, generate if missing (for legacy databases)
+    if not db_settings.master_feed_token:
+        try:
+            import secrets
+            db_settings.master_feed_token = secrets.token_hex(16)
+            db.commit()
+            db.refresh(db_settings)
+            logger.info("Generated master_feed_token for legacy database.")
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Failed to generate master_feed_token: {e}")
+
     # Build dictionary from DB model attributes, handling possible None values
     db_data = {
         "id": db_settings.id,
@@ -59,6 +79,7 @@ def get_settings(db: Session, with_password: bool = False) -> SettingsSchema:
         "email_check_interval": db_settings.email_check_interval,
         "auto_add_new_senders": db_settings.auto_add_new_senders,
         "auth_username": db_settings.auth_username,
+        "master_feed_token": db_settings.master_feed_token,
     }
 
     # Get all environment settings that were explicitly set.
@@ -77,7 +98,20 @@ def get_settings(db: Session, with_password: bool = False) -> SettingsSchema:
         if "imap_password" in locked_fields:
             merged_data["imap_password"] = env_settings.imap_password
         else:
-            merged_data["imap_password"] = db_settings.imap_password
+            raw_password = db_settings.imap_password
+            decrypted_password = decrypt_string(raw_password)
+            merged_data["imap_password"] = decrypted_password
+
+            # Transparent Auto-Migration: If legacy password is not encrypted, encrypt it in the DB now.
+            if raw_password and not raw_password.startswith(ENCRYPTION_PREFIX):
+                try:
+                    db_settings.imap_password = encrypt_string(raw_password)
+                    db.commit()
+                    db.refresh(db_settings)
+                    logger.info("Auto-migrated legacy plaintext IMAP password to encrypted format.")
+                except Exception as e:
+                    db.rollback()
+                    logger.error(f"Failed to auto-migrate legacy IMAP password: {e}")
     elif "imap_password" in merged_data:
         # Ensure password is not in the data if not requested
         del merged_data["imap_password"]
@@ -115,7 +149,7 @@ def create_or_update_settings(db: Session, settings: SettingsCreate):
                 db_settings.auth_password_hash = None
         elif key == "imap_password":
             if value:  # Only update password if a new one is provided
-                setattr(db_settings, key, value)
+                setattr(db_settings, key, encrypt_string(value))
         elif hasattr(db_settings, key):
             setattr(db_settings, key, value)
 

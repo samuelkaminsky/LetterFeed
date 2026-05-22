@@ -1,7 +1,7 @@
 "use client"
 
 import { createContext, useState, useEffect, ReactNode } from "react"
-import { getAuthStatus, login as apiLogin, getSettings } from "@/lib/api"
+import { getAuthStatus, login as apiLogin, logout as apiLogout, verifyAuth } from "@/lib/api"
 import { useRouter } from "next/navigation"
 
 interface AuthContextType {
@@ -29,20 +29,10 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         if (!auth_enabled) {
           setIsAuthenticated(true);
         } else {
-          const token = localStorage.getItem("authToken");
-          if (token) {
-            // If a token exists, verify it by making a protected API call.
-            // getSettings is a good candidate. If it fails with a 401,
-            // the fetcher will remove the token and throw, which we catch here.
-            await getSettings();
-            setIsAuthenticated(true);
-          } else {
-            setIsAuthenticated(false);
-          }
+          const isValid = await verifyAuth();
+          setIsAuthenticated(isValid);
         }
       } catch (error) {
-        // This will catch errors from getAuthStatus or getSettings.
-        // If it was a 401, the token is already removed by the fetcher.
         setIsAuthenticated(false);
         console.error("Authentication check failed", error);
       } finally {
@@ -64,7 +54,9 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   }
 
   const logout = () => {
-    localStorage.removeItem("authToken")
+    apiLogout().catch((error) => {
+      console.error("Logout API call failed", error);
+    });
     setIsAuthenticated(false)
     router.push("/login")
   }
