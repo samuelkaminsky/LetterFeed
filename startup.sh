@@ -1,6 +1,11 @@
 #!/bin/bash
 set -e
 
+# Clear docker space to prevent "No space left on device" errors
+docker system prune -a --volumes -f || true
+docker image prune -a -f || true
+apt-get clean || true
+
 # Update and install Docker using the official repo to ensure docker-compose-plugin is available
 apt-get update
 apt-get install -y ca-certificates curl gnupg git
@@ -42,6 +47,9 @@ fi
 
 # Ensure frontend uses the correct backend URL in Docker Compose
 echo "LETTERFEED_BACKEND_URL=http://backend:8000" >> .env
+
+# Force pull the latest production docker images (to bypass local cached images)
+docker compose pull
 
 # Start LetterFeed
 docker compose up -d
