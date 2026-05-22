@@ -21,9 +21,12 @@ apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin do
 mkdir -p /opt/letterfeed
 cd /opt/letterfeed
 
-# Clone LetterFeed repository
+# Clone or update LetterFeed repository
 if [ ! -d ".git" ]; then
   git clone https://github.com/samuelkaminsky/LetterFeed.git .
+else
+  git fetch origin
+  git reset --hard origin/master
 fi
 
 # Configure environment
