@@ -1,6 +1,6 @@
 import hashlib
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
@@ -23,6 +23,7 @@ def _generate_etag(identifier: str, timestamp) -> str:
 
 @router.get("/feeds/all")
 def get_master_feed(
+    request: Request,
     db: Session = Depends(get_db),
     if_none_match: str | None = Header(default=None),
 ):
@@ -36,7 +37,7 @@ def get_master_feed(
         logger.debug("Feed unmodified, returning 304")
         return Response(status_code=304)
 
-    feed = generate_master_feed(db)
+    feed = generate_master_feed(db, request=request)
     logger.info("Successfully generated master feed")
     return Response(
         content=feed, 
@@ -51,6 +52,7 @@ def get_master_feed(
 @router.get("/feeds/{feed_identifier}")
 def get_newsletter_feed(
     feed_identifier: str, 
+    request: Request,
     db: Session = Depends(get_db),
     if_none_match: str | None = Header(default=None),
 ):
@@ -71,7 +73,7 @@ def get_newsletter_feed(
         logger.debug("Feed unmodified, returning 304")
         return Response(status_code=304)
 
-    feed = generate_feed(db, feed_identifier)
+    feed = generate_feed(db, feed_identifier, request=request)
     if not feed:
         raise HTTPException(status_code=404, detail="Newsletter not found")
 

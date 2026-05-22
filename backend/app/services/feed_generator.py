@@ -1,6 +1,7 @@
 from typing import List
 
 from dateutil import tz
+from fastapi import Request
 from feedgen.feed import FeedGenerator
 from sqlalchemy.orm import Session
 
@@ -10,12 +11,40 @@ from app.crud.newsletters import get_newsletter_by_identifier
 from app.models.entries import Entry
 
 
+def _get_base_url(request: Request | None = None, base_url_param: str | None = None) -> str:
+    """Determine the application base URL dynamically from request headers or config."""
+    if request is not None:
+        forwarded_host = request.headers.get("x-forwarded-host")
+        forwarded_proto = request.headers.get("x-forwarded-proto", "http")
+        if forwarded_host:
+            return f"{forwarded_proto}://{forwarded_host}".rstrip("/")
+
+        # If base_url_param is provided, use it if it's not the internal backend host
+        if base_url_param and "backend:8000" not in base_url_param:
+            return base_url_param.rstrip("/")
+
+        # Fallback to standard Host header if not backend:8000
+        host = request.headers.get("host")
+        if host and host != "backend:8000":
+            return f"{request.url.scheme}://{host}".rstrip("/")
+
+    if base_url_param and "backend:8000" not in base_url_param:
+        return base_url_param.rstrip("/")
+
+    # Fallback to settings.app_base_url
+    url = settings.app_base_url.rstrip("/")
+    if url.endswith("/api"):
+        url = url[:-4]
+    return url
+
+
 def _create_feed_generator(
-    feed_id: str, title: str, feed_url: str, description: str
+    feed_id: str, title: str, feed_url: str, description: str, base_url: str | None = None
 ) -> FeedGenerator:
     """Initialize and configures a FeedGenerator instance."""
-    logo_url = f"{settings.app_base_url}/logo.png"
-    icon_url = f"{settings.app_base_url}/favicon.ico"
+    url = (base_url or settings.app_base_url).rstrip("/")
+    logo_url = f"{url}/logo.png"
+    icon_url = f"{url}/favicon.ico"
 
     fg = FeedGenerator()
     fg.id(feed_id)
@@ -23,7 +52,7 @@ def _create_feed_generator(
     fg.logo(logo_url)
     fg.icon(icon_url)
     fg.link(href=feed_url, rel="self")
-    fg.link(href=f"{settings.app_base_url}/", rel="alternate")
+    fg.link(href=f"{url}/", rel="alternate")
     fg.description(description)
     return fg
 
@@ -51,7 +80,12 @@ def _add_entries_to_feed(
             fe.updated(entry.received_at)
 
 
-def generate_feed(db: Session, feed_identifier: str):
+def generate_feed(
+    db: Session,
+    feed_identifier: str,
+    base_url: str | None = None,
+    request: Request | None = None,
+):
     """Generate an Atom feed for a given newsletter."""
     newsletter = get_newsletter_by_identifier(db, feed_identifier)
     if not newsletter:
@@ -59,7 +93,8 @@ def generate_feed(db: Session, feed_identifier: str):
 
     entries = get_entries_by_newsletter(db, newsletter.id)
 
-    feed_url = f"{settings.app_base_url}/feeds/{newsletter.slug or newsletter.id}"
+    url = _get_base_url(request, base_url)
+    feed_url = f"{url}/api/feeds/{newsletter.slug or newsletter.id}"
     sender_emails = ", ".join([s.email for s in newsletter.senders])
     description = f"A feed of newsletters from {sender_emails}"
 
@@ -68,6 +103,7 @@ def generate_feed(db: Session, feed_identifier: str):
         title=newsletter.name,
         feed_url=feed_url,
         description=description,
+        base_url=url,
     )
 
     _add_entries_to_feed(fg, entries)
@@ -75,17 +111,23 @@ def generate_feed(db: Session, feed_identifier: str):
     return fg.atom_str(pretty=True)
 
 
-def generate_master_feed(db: Session):
+def generate_master_feed(
+    db: Session,
+    base_url: str | None = None,
+    request: Request | None = None,
+):
     """Generate a master Atom feed for all newsletters."""
     entries = get_all_entries(db, limit=settings.master_feed_limit)
 
-    feed_url = f"{settings.app_base_url}/feeds/all"
+    url = _get_base_url(request, base_url)
+    feed_url = f"{url}/api/feeds/all"
 
     fg = _create_feed_generator(
         feed_id="urn:letterfeed:master",
         title="LetterFeed: All Newsletters",
         feed_url=feed_url,
         description="A master feed of all your newsletters.",
+        base_url=url,
     )
 
     _add_entries_to_feed(fg, entries, is_master_feed=True)

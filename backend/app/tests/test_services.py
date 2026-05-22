@@ -1,6 +1,8 @@
 import uuid
 import xml.etree.ElementTree as ET
+from unittest.mock import MagicMock
 
+from fastapi import Request
 from sqlalchemy.orm import Session
 
 from app.crud.entries import create_entry
@@ -114,3 +116,61 @@ def test_generate_feed_nonexistent_newsletter(db_session: Session):
     """Test feed generation for a non-existent newsletter."""
     feed_xml = generate_feed(db_session, "nonexistent-id")
     assert feed_xml is None
+
+
+def test_generate_feed_with_proxy_request(db_session: Session):
+    """Test that feed generation dynamically uses reverse proxy headers for self-links."""
+    # Create a newsletter
+    newsletter_data = NewsletterCreate(
+        name="Proxy Test", sender_emails=["proxy@example.com"]
+    )
+    newsletter = create_newsletter(db_session, newsletter_data)
+    
+    # Create a mock Request
+    mock_request = MagicMock(spec=Request)
+    mock_request.headers = {
+        "x-forwarded-host": "letterfeed.example.com",
+        "x-forwarded-proto": "https"
+    }
+    
+    # Generate the feed
+    feed_xml = generate_feed(db_session, newsletter.id, request=mock_request)
+    assert feed_xml is not None
+    
+    # Parse the feed XML to verify content
+    root = ET.fromstring(feed_xml)
+    ns = {"atom": "http://www.w3.org/2005/Atom"}
+    
+    # Check for the self link
+    links = root.findall("atom:link", ns)
+    self_link = next(link for link in links if link.get("rel") == "self")
+    assert self_link.get("href") == f"https://letterfeed.example.com/api/feeds/{newsletter.id}"
+    
+    # Check alternate link, logo, and icon
+    alternate_link = next(link for link in links if link.get("rel") == "alternate")
+    assert alternate_link.get("href") == "https://letterfeed.example.com/"
+    assert root.find("atom:logo", ns).text == "https://letterfeed.example.com/logo.png"
+    assert root.find("atom:icon", ns).text == "https://letterfeed.example.com/favicon.ico"
+
+
+def test_generate_master_feed_with_proxy_request(db_session: Session):
+    """Test that master feed generation dynamically uses reverse proxy headers for self-links."""
+    # Create a mock Request
+    mock_request = MagicMock(spec=Request)
+    mock_request.headers = {
+        "x-forwarded-host": "letterfeed.example.com",
+        "x-forwarded-proto": "https"
+    }
+    
+    # Generate the feed
+    feed_xml = generate_master_feed(db_session, request=mock_request)
+    assert feed_xml is not None
+    
+    # Parse the feed XML to verify content
+    root = ET.fromstring(feed_xml)
+    ns = {"atom": "http://www.w3.org/2005/Atom"}
+    
+    # Check for the self link
+    links = root.findall("atom:link", ns)
+    self_link = next(link for link in links if link.get("rel") == "self")
+    assert self_link.get("href") == "https://letterfeed.example.com/api/feeds/all"
