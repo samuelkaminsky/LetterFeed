@@ -60,6 +60,63 @@ def _connect_to_imap(
         return None
 
 
+def _find_archive_folder(mail: imaplib.IMAP4_SSL) -> str | None:
+    """Auto-detect an Archive folder on the IMAP server."""
+    try:
+        status, folders = mail.list()
+        if status != "OK":
+            logger.warning(f"Failed to list IMAP folders for auto-detection: {status}")
+            return None
+
+        archive_candidates = []
+        for folder in folders:
+            try:
+                folder_str = folder.decode("utf-8", "ignore")
+            except Exception:
+                continue
+
+            # Parse folder name by searching for the last quoted string or the last word
+            name = None
+            match = re.search(r'"([^"]+)"\s*$', folder_str)
+            if match:
+                name = match.group(1)
+            else:
+                parts = folder_str.split()
+                if parts:
+                    name = parts[-1].strip('"')
+
+            if not name:
+                continue
+
+            # Standard special-use flag check (\Archive)
+            if r"\Archive" in folder_str:
+                return name
+
+            name_lower = name.lower()
+            # Prioritize exact matches
+            if name_lower == "archive":
+                return name
+            elif name_lower in [
+                "archives",
+                "archived",
+                "all mail",
+                "gmail/all mail",
+                "[gmail]/all mail",
+            ]:
+                archive_candidates.append(name)
+
+        if archive_candidates:
+            # Prioritize candidates containing "archive" over "all mail"
+            archive_candidates.sort(
+                key=lambda x: 0 if "archive" in x.lower() else 1
+            )
+            return archive_candidates[0]
+
+    except Exception as e:
+        logger.warning(f"Error auto-detecting Archive folder: {e}", exc_info=True)
+    return None
+
+
 def _fetch_unread_email_ids(mail: imaplib.IMAP4_SSL) -> list[str]:
     """Fetch IDs of unread emails."""
     status, messages = mail.search(None, "(UNSEEN)")
@@ -210,6 +267,7 @@ def _process_single_email(
     db: Session,
     sender_map: dict[str, Newsletter],
     settings: Settings,
+    detected_archive: str | None = None,
 ) -> None:
     """Process a single email message."""
     status, data = mail.fetch(num, "(BODY.PEEK[])")
@@ -227,12 +285,6 @@ def _process_single_email(
         )
         return
 
-    if get_entry_by_message_id(db, message_id):
-        logger.info(f"Email with Message-ID {message_id} already processed, skipping.")
-        return
-
-    logger.debug(f"Processing email from {sender} with subject '{msg['Subject']}'")
-
     newsletter = sender_map.get(sender)
     
     # If no exact match, check for wildcard matches
@@ -249,46 +301,57 @@ def _process_single_email(
     if not newsletter:
         return
 
-    subject = str(make_header(decode_header(msg["Subject"])))
-    body = _get_email_body(msg)
-    date_str = msg["Date"]
-    received_at = email.utils.parsedate_to_datetime(date_str) if date_str else None
+    # Check if the email was already successfully processed in the database
+    already_processed = get_entry_by_message_id(db, message_id) is not None
 
-    if newsletter.extract_content:
-        try:
-            cleaned_data = _extract_and_clean_html(body)
-            # The subject from the email itself is often better than what readability extracts
-            # so we only override the body.
-            body = cleaned_data["body"]
-        except Exception as e:
-            logger.warning(
-                f"Failed to extract content from email '{subject}' from {sender}: {e}. Using raw body."
-            )
+    if already_processed:
+        logger.info(f"Email with Message-ID {message_id} already processed, skipping database insertion.")
+    else:
+        logger.debug(f"Processing email from {sender} with subject '{msg['Subject']}'")
+        subject = str(make_header(decode_header(msg["Subject"])))
+        body = _get_email_body(msg)
+        date_str = msg["Date"]
+        received_at = email.utils.parsedate_to_datetime(date_str) if date_str else None
 
-    entry_schema = EntryCreate(
-        subject=subject, body=body, message_id=message_id, received_at=received_at
-    )
-    new_entry = create_entry(db, entry_schema, newsletter.id)
+        if newsletter.extract_content:
+            try:
+                cleaned_data = _extract_and_clean_html(body)
+                # The subject from the email itself is often better than what readability extracts
+                # so we only override the body.
+                body = cleaned_data["body"]
+            except Exception as e:
+                logger.warning(
+                    f"Failed to extract content from email '{subject}' from {sender}: {e}. Using raw body."
+                )
 
-    if not new_entry:
-        logger.error(
-            f"Failed to create entry for newsletter '{newsletter.name}' from sender {sender}, email will not be marked as read or moved."
+        entry_schema = EntryCreate(
+            subject=subject, body=body, message_id=message_id, received_at=received_at
         )
-        return
+        new_entry = create_entry(db, entry_schema, newsletter.id)
 
-    logger.info(
-        f"Created new entry for newsletter '{newsletter.name}' from sender {sender}"
-    )
+        if not new_entry:
+            logger.error(
+                f"Failed to create entry for newsletter '{newsletter.name}' from sender {sender}, email will not be marked as read or moved."
+            )
+            return
+
+        logger.info(
+            f"Created new entry for newsletter '{newsletter.name}' from sender {sender}"
+        )
 
     if settings.mark_as_read:
         logger.debug(f"Marking email with id={num} as read")
         mail.store(num, "+FLAGS", "\\Seen")
 
-    move_folder = newsletter.move_to_folder or settings.move_to_folder
+    move_folder = newsletter.move_to_folder or settings.move_to_folder or detected_archive
     if move_folder:
         logger.debug(f"Moving email with id={num} to {move_folder}")
         mail.copy(num, move_folder)
         mail.store(num, "+FLAGS", "\\Deleted")
+    else:
+        logger.warning(
+            f"Could not archive email with id={num} because no move folder is configured and no Archive folder was auto-detected."
+        )
 
 
 def process_emails(db: Session) -> None:
@@ -329,18 +392,28 @@ def process_emails(db: Session) -> None:
             continue
 
         try:
+            # Check if any newsletter or global setting is missing a configured move folder.
+            # If so, we'll try to auto-detect a server Archive folder.
+            detected_archive = None
+            has_missing_move_folder = any(
+                not (nl.move_to_folder or settings.move_to_folder)
+                for nl in newsletters_in_folder
+            )
+            if has_missing_move_folder:
+                detected_archive = _find_archive_folder(mail)
+                if detected_archive:
+                    logger.info(f"Auto-detected Archive folder for fallback: {detected_archive}")
+
             email_ids = _fetch_unread_email_ids(mail)
             logger.info(
                 f"Found {len(email_ids)} unseen emails in folder '{search_folder}'."
             )
             for num in email_ids:
-                _process_single_email(num, mail, db, sender_map, settings)
+                _process_single_email(num, mail, db, sender_map, settings, detected_archive)
 
-            # Expunge logic needs to be carefully considered.
-            # If any newsletter in this folder group has a move_to_folder, we expunge.
-            # This is an approximation. A more robust solution might require per-email expunge.
+            # Expunge logic: expunge if any configured or auto-detected folder is used
             should_expunge = any(
-                nl.move_to_folder or settings.move_to_folder
+                nl.move_to_folder or settings.move_to_folder or detected_archive
                 for nl in newsletters_in_folder
             )
             if should_expunge:

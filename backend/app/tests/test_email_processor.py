@@ -267,9 +267,12 @@ def test_process_single_email_with_null_bytes_in_body(db_session: Session):
             mock_document.side_effect = ValueError("Simulated lxml failure")
             _process_single_email("1", mock_mail, db_session, sender_map, settings)
 
-            # Assert that the logger was called with a warning
-            mock_logger.warning.assert_called_once()
-            assert "Failed to extract content" in mock_logger.warning.call_args[0][0]
+            # Assert that the warning was logged
+            any_warning_call = any(
+                "Failed to extract content" in call_args[0][0]
+                for call_args in mock_logger.warning.call_args_list
+            )
+            assert any_warning_call, "Expected a warning log containing 'Failed to extract content'"
 
         # Check that an entry was still created
         mock_create_entry.assert_called_once()
@@ -278,3 +281,121 @@ def test_process_single_email_with_null_bytes_in_body(db_session: Session):
         # The body should be the original (but decoded) body, since extraction failed
         # Note: _get_email_body will decode the payload.
         assert "Hello\x00 World" in entry_create_arg.body
+
+
+def test_process_single_email_already_processed_still_archived(db_session: Session):
+    """Test that a previously processed email is still marked as read and archived."""
+    # 1. ARRANGE
+    settings_data = SettingsCreate(
+        imap_server="test.com",
+        imap_username="test",
+        imap_password="password",
+        move_to_folder="GlobalArchive",
+        mark_as_read=True,
+    )
+    newsletter_data = NewsletterCreate(
+        name="Test Newsletter",
+        sender_emails=["test@example.com"],
+    )
+    mock_mail, newsletter, settings = _setup_test_email_processing(
+        db_session, newsletter_data, settings_data
+    )
+    sender_map = {newsletter.senders[0].email: newsletter}
+
+    # Pre-create entry in DB to simulate "already processed"
+    from app.crud.entries import create_entry
+    from app.schemas.entries import EntryCreate
+    entry_schema = EntryCreate(
+        subject="Test Email",
+        body="Already Processed Body",
+        message_id="<test-message-id>",  # matches mock msg in _setup_test_email_processing
+    )
+    create_entry(db_session, entry_schema, newsletter.id)
+
+    # 2. ACT
+    with patch("app.services.email_processor.create_entry") as mock_create_entry:
+        _process_single_email("1", mock_mail, db_session, sender_map, settings)
+
+    # 3. ASSERT
+    # Should skip DB entry creation
+    mock_create_entry.assert_not_called()
+    # But should still mark as read and archive/move
+    mock_mail.store.assert_any_call("1", "+FLAGS", "\\Seen")
+    mock_mail.copy.assert_called_once_with("1", "GlobalArchive")
+    mock_mail.store.assert_any_call("1", "+FLAGS", "\\Deleted")
+
+
+def test_find_archive_folder():
+    """Test that _find_archive_folder correctly auto-detects Archive folders."""
+    from app.services.email_processor import _find_archive_folder
+
+    # Scenario A: Special-use \Archive attribute is present
+    mock_mail = MagicMock(spec=imaplib.IMAP4_SSL)
+    mock_mail.list.return_value = (
+        "OK",
+        [
+            b'(\\HasNoChildren) "/" "INBOX"',
+            b'(\\HasNoChildren \\Archive) "/" "ServerArchive"',
+            b'(\\HasNoChildren) "/" "Trash"',
+        ],
+    )
+    assert _find_archive_folder(mock_mail) == "ServerArchive"
+
+    # Scenario B: Name fallback to "Archive" (case-insensitive exact match)
+    mock_mail.list.return_value = (
+        "OK",
+        [
+            b'(\\HasNoChildren) "/" "INBOX"',
+            b'(\\HasNoChildren) "/" "Archive"',
+        ],
+    )
+    assert _find_archive_folder(mock_mail) == "Archive"
+
+    # Scenario C: Name fallback to "archived" (case-insensitive candidate)
+    mock_mail.list.return_value = (
+        "OK",
+        [
+            b'(\\HasNoChildren) "/" "archived"',
+        ],
+    )
+    assert _find_archive_folder(mock_mail) == "archived"
+
+    # Scenario D: Prioritize "archived" candidate over "All Mail"
+    mock_mail.list.return_value = (
+        "OK",
+        [
+            b'(\\HasNoChildren) "/" "All Mail"',
+            b'(\\HasNoChildren) "/" "archived"',
+        ],
+    )
+    assert _find_archive_folder(mock_mail) == "archived"
+
+
+def test_process_single_email_with_auto_detected_archive_fallback(db_session: Session):
+    """Test that fallback detected_archive is used when no folder is explicitly set."""
+    # 1. ARRANGE
+    settings_data = SettingsCreate(
+        imap_server="test.com",
+        imap_username="test",
+        imap_password="password",
+        move_to_folder=None,  # No global archive
+    )
+    newsletter_data = NewsletterCreate(
+        name="Test Newsletter",
+        sender_emails=["test@example.com"],
+        move_to_folder=None,  # No newsletter archive
+    )
+    mock_mail, newsletter, settings = _setup_test_email_processing(
+        db_session, newsletter_data, settings_data
+    )
+    sender_map = {newsletter.senders[0].email: newsletter}
+
+    # 2. ACT
+    _process_single_email(
+        "1", mock_mail, db_session, sender_map, settings, detected_archive="DetectedArchive"
+    )
+
+    # 3. ASSERT
+    # Should use the detected_archive fallback
+    mock_mail.copy.assert_called_once_with("1", "DetectedArchive")
+    mock_mail.store.assert_any_call("1", "+FLAGS", "\\Deleted")
