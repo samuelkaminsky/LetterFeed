@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.logging import get_logger
 from app.crud.entries import create_entry
+from app.crud.feed_cache import delete_cached_feed
 from app.crud.newsletters import (
     create_newsletter,
     delete_newsletter,
@@ -76,6 +77,13 @@ def delete_existing_newsletter(newsletter_id: str, db: Session = Depends(get_db)
     if db_newsletter is None:
         logger.warning(f"Newsletter with id={newsletter_id} not found, cannot delete")
         raise HTTPException(status_code=404, detail="Newsletter not found")
+    
+    # Invalidate feed cache for this newsletter
+    try:
+        delete_cached_feed(db, newsletter_id)
+    except Exception as e:
+        logger.error(f"Failed to delete feed cache for newsletter_id={newsletter_id}: {e}")
+        
     return db_newsletter
 
 

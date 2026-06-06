@@ -85,13 +85,14 @@ def generate_feed(
     feed_identifier: str,
     base_url: str | None = None,
     request: Request | None = None,
+    limit: int | None = None,
 ):
     """Generate an Atom feed for a given newsletter."""
     newsletter = get_newsletter_by_identifier(db, feed_identifier)
     if not newsletter:
         return None
 
-    entries = get_entries_by_newsletter(db, newsletter.id)
+    entries = get_entries_by_newsletter(db, newsletter.id, limit=limit)
 
     url = _get_base_url(request, base_url)
     feed_url = f"{url}/api/feeds/{newsletter.slug or newsletter.id}"

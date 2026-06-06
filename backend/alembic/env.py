@@ -23,6 +23,7 @@ from app.core.config import settings as app_settings
 from app.models.entries import Entry
 from app.models.newsletters import Newsletter
 from app.models.settings import Settings
+from app.models.feed_cache import FeedCache
 
 target_metadata = Base.metadata
 

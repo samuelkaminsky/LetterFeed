@@ -4,9 +4,11 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.core.logging import get_logger
 from app.crud.entries import get_latest_entry_timestamp
+from app.crud.feed_cache import get_cached_feed, set_cached_feed
 from app.crud.newsletters import get_newsletter_by_identifier
 from app.services.feed_generator import generate_feed, generate_master_feed
 
@@ -36,8 +38,8 @@ def get_master_feed(
     from app.crud.settings import get_settings
 
     if is_auth_enabled(db):
-        settings = get_settings(db)
-        if not token or not settings.master_feed_token or not secrets.compare_digest(token, settings.master_feed_token):
+        db_settings = get_settings(db)
+        if not token or not db_settings.master_feed_token or not secrets.compare_digest(token, db_settings.master_feed_token):
             logger.warning("Unauthorized attempt to access master feed (invalid or missing token)")
             raise HTTPException(status_code=401, detail="Unauthorized: Invalid or missing token")
 
@@ -50,7 +52,20 @@ def get_master_feed(
         logger.debug("Feed unmodified, returning 304")
         return Response(status_code=304)
 
+    cached_feed = get_cached_feed(db, "master", etag)
+    if cached_feed is not None:
+        logger.info("Returning cached master feed")
+        return Response(
+            content=cached_feed,
+            media_type="application/atom+xml",
+            headers={
+                "ETag": etag,
+                "Cache-Control": "public, max-age=60"
+            }
+        )
+
     feed = generate_master_feed(db, request=request)
+    set_cached_feed(db, "master", etag, feed)
     logger.info("Successfully generated master feed")
     return Response(
         content=feed, 
@@ -99,11 +114,29 @@ def get_newsletter_feed(
         logger.debug("Feed unmodified, returning 304")
         return Response(status_code=304)
 
+    cached_feed = get_cached_feed(db, newsletter.id, etag)
+    if cached_feed is not None:
+        logger.info(f"Returning cached feed for newsletter_id={newsletter.id}")
+        return Response(
+            content=cached_feed,
+            media_type="application/atom+xml",
+            headers={
+                "ETag": etag,
+                "Cache-Control": "public, max-age=60"
+            }
+        )
+
     # For generate_feed, always pass the secure newsletter ID to prevent any internal slug mapping issues
-    feed = generate_feed(db, newsletter.id, request=request)
+    feed = generate_feed(
+        db,
+        newsletter.id,
+        request=request,
+        limit=settings.newsletter_feed_limit,
+    )
     if not feed:
         raise HTTPException(status_code=404, detail="Newsletter not found")
 
+    set_cached_feed(db, newsletter.id, etag, feed)
     logger.info(
         f"Successfully generated feed for newsletter with identifier={feed_identifier}"
     )
