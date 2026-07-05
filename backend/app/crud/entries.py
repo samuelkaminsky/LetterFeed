@@ -62,6 +62,10 @@ def get_entry_by_message_id(db: Session, message_id: str):
     return db.query(Entry).filter(Entry.message_id == message_id).first()
 
 
+# In-memory cache for the latest entry timestamps: feed_id or "master" -> datetime | None
+_latest_timestamp_cache = {}
+
+
 def get_latest_entry_timestamp(
     db: Session, newsletter_id: str | None = None
 ) -> datetime | None:
@@ -73,6 +77,24 @@ def get_latest_entry_timestamp(
     return result[0] if result else None
 
 
+def get_latest_entry_timestamp_cached(
+    db: Session, newsletter_id: str | None = None
+) -> datetime | None:
+    """Retrieve the timestamp of the latest entry, cached in memory."""
+    cache_key = newsletter_id or "master"
+    if cache_key in _latest_timestamp_cache:
+        return _latest_timestamp_cache[cache_key]
+    
+    val = get_latest_entry_timestamp(db, newsletter_id)
+    _latest_timestamp_cache[cache_key] = val
+    return val
+
+
+def clear_latest_timestamp_cache():
+    """Clear the in-memory cache of the latest entry timestamps."""
+    _latest_timestamp_cache.clear()
+
+
 def create_entry(db: Session, entry: EntryCreate, newsletter_id: str):
     """Create a new entry for a newsletter."""
     logger.info(
@@ -82,5 +104,9 @@ def create_entry(db: Session, entry: EntryCreate, newsletter_id: str):
     db.add(db_entry)
     db.commit()
     db.refresh(db_entry)
+    
+    # Invalidate cache since a new entry is added
+    clear_latest_timestamp_cache()
+    
     logger.info(f"Successfully created entry with id={db_entry.id}")
     return db_entry

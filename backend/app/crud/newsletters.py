@@ -139,5 +139,10 @@ def delete_newsletter(db: Session, newsletter_id: str):
 
     db.delete(db_newsletter)
     db.commit()
+    
+    # Invalidate cache since its entries are deleted
+    from app.crud.entries import clear_latest_timestamp_cache
+    clear_latest_timestamp_cache()
+    
     logger.info(f"Successfully deleted newsletter with id={newsletter_id}")
     return db_newsletter

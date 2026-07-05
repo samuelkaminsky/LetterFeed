@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.logging import get_logger
-from app.crud.entries import get_latest_entry_timestamp
+from app.crud.entries import get_latest_entry_timestamp_cached
 from app.crud.feed_cache import get_cached_feed, set_cached_feed
 from app.crud.newsletters import get_newsletter_by_identifier
 from app.services.feed_generator import generate_feed, generate_master_feed
@@ -29,6 +29,7 @@ def get_master_feed(
     token: str | None = None,
     db: Session = Depends(get_db),
     if_none_match: str | None = Header(default=None),
+    if_modified_since: str | None = Header(default=None),
 ):
     """Generate a master Atom feed for all newsletters."""
     # Authenticate the master feed if auth is enabled
@@ -45,12 +46,48 @@ def get_master_feed(
 
     logger.info("Generating master feed for all newsletters")
     
-    latest_timestamp = get_latest_entry_timestamp(db)
+    latest_timestamp = get_latest_entry_timestamp_cached(db)
     etag = _generate_etag("master", latest_timestamp)
     
     if if_none_match == etag:
         logger.debug("Feed unmodified, returning 304")
         return Response(status_code=304)
+
+    # HTTP If-Modified-Since check
+    if if_modified_since and latest_timestamp:
+        try:
+            import datetime
+            from email.utils import parsedate_to_datetime
+            ims_datetime = parsedate_to_datetime(if_modified_since)
+            latest_timestamp_tz = (
+                latest_timestamp.replace(tzinfo=datetime.UTC)
+                if latest_timestamp.tzinfo is None
+                else latest_timestamp.astimezone(datetime.UTC)
+            )
+            if latest_timestamp_tz.replace(microsecond=0) <= ims_datetime.replace(microsecond=0):
+                logger.debug("Feed unmodified since If-Modified-Since, returning 304")
+                return Response(status_code=304)
+        except Exception as e:
+            logger.warning(f"Error parsing If-Modified-Since header: {e}")
+
+    # Determine Last-Modified header value
+    import datetime
+    from email.utils import format_datetime
+    last_modified_str = None
+    if latest_timestamp:
+        latest_timestamp_tz = (
+            latest_timestamp.replace(tzinfo=datetime.UTC)
+            if latest_timestamp.tzinfo is None
+            else latest_timestamp.astimezone(datetime.UTC)
+        )
+        last_modified_str = format_datetime(latest_timestamp_tz, usegmt=True)
+
+    headers = {
+        "ETag": etag,
+        "Cache-Control": "public, max-age=60"
+    }
+    if last_modified_str:
+        headers["Last-Modified"] = last_modified_str
 
     cached_feed = get_cached_feed(db, "master", etag)
     if cached_feed is not None:
@@ -58,10 +95,7 @@ def get_master_feed(
         return Response(
             content=cached_feed,
             media_type="application/atom+xml",
-            headers={
-                "ETag": etag,
-                "Cache-Control": "public, max-age=60"
-            }
+            headers=headers
         )
 
     feed = generate_master_feed(db, request=request)
@@ -70,10 +104,7 @@ def get_master_feed(
     return Response(
         content=feed, 
         media_type="application/atom+xml",
-        headers={
-            "ETag": etag,
-            "Cache-Control": "public, max-age=60"
-        }
+        headers=headers
     )
 
 
@@ -83,6 +114,7 @@ def get_newsletter_feed(
     request: Request,
     db: Session = Depends(get_db),
     if_none_match: str | None = Header(default=None),
+    if_modified_since: str | None = Header(default=None),
 ):
     """Generate an Atom feed for a specific newsletter."""
     # Secure feeds: Restrict RSS feeds strictly to the cryptographically secure ID (NanoID)
@@ -107,12 +139,48 @@ def get_newsletter_feed(
             detail="Forbidden: Guessable slug-based feed access is disabled for security. Please use the secure feed ID."
         )
 
-    latest_timestamp = get_latest_entry_timestamp(db, newsletter_id=newsletter.id)
+    latest_timestamp = get_latest_entry_timestamp_cached(db, newsletter_id=newsletter.id)
     etag = _generate_etag(newsletter.id, latest_timestamp)
     
     if if_none_match == etag:
         logger.debug("Feed unmodified, returning 304")
         return Response(status_code=304)
+
+    # HTTP If-Modified-Since check
+    if if_modified_since and latest_timestamp:
+        try:
+            import datetime
+            from email.utils import parsedate_to_datetime
+            ims_datetime = parsedate_to_datetime(if_modified_since)
+            latest_timestamp_tz = (
+                latest_timestamp.replace(tzinfo=datetime.UTC)
+                if latest_timestamp.tzinfo is None
+                else latest_timestamp.astimezone(datetime.UTC)
+            )
+            if latest_timestamp_tz.replace(microsecond=0) <= ims_datetime.replace(microsecond=0):
+                logger.debug("Feed unmodified since If-Modified-Since, returning 304")
+                return Response(status_code=304)
+        except Exception as e:
+            logger.warning(f"Error parsing If-Modified-Since header: {e}")
+
+    # Determine Last-Modified header value
+    import datetime
+    from email.utils import format_datetime
+    last_modified_str = None
+    if latest_timestamp:
+        latest_timestamp_tz = (
+            latest_timestamp.replace(tzinfo=datetime.UTC)
+            if latest_timestamp.tzinfo is None
+            else latest_timestamp.astimezone(datetime.UTC)
+        )
+        last_modified_str = format_datetime(latest_timestamp_tz, usegmt=True)
+
+    headers = {
+        "ETag": etag,
+        "Cache-Control": "public, max-age=60"
+    }
+    if last_modified_str:
+        headers["Last-Modified"] = last_modified_str
 
     cached_feed = get_cached_feed(db, newsletter.id, etag)
     if cached_feed is not None:
@@ -120,10 +188,7 @@ def get_newsletter_feed(
         return Response(
             content=cached_feed,
             media_type="application/atom+xml",
-            headers={
-                "ETag": etag,
-                "Cache-Control": "public, max-age=60"
-            }
+            headers=headers
         )
 
     # For generate_feed, always pass the secure newsletter ID to prevent any internal slug mapping issues
@@ -143,8 +208,5 @@ def get_newsletter_feed(
     return Response(
         content=feed, 
         media_type="application/atom+xml",
-        headers={
-            "ETag": etag,
-            "Cache-Control": "public, max-age=60"
-        }
+        headers=headers
     )

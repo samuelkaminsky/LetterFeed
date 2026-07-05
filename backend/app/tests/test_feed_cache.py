@@ -40,6 +40,10 @@ def test_feed_caching_and_invalidation(client: TestClient, db_session: Session):
     cache_record.content = fake_content
     db_session.commit()
 
+    # Clear memory cache since we bypassed the CRUD set function
+    from app.crud.feed_cache import _feed_memory_cache
+    _feed_memory_cache.clear()
+
     # 6. Fetch again: should return our modified cached content (cache hit)
     response_2 = client.get(f"/feeds/{newsletter_id}")
     assert response_2.status_code == 200
@@ -94,6 +98,10 @@ def test_master_feed_caching(client: TestClient, db_session: Session):
     cache_record.content = fake_master_content
     db_session.commit()
 
+    # Clear memory cache since we bypassed the CRUD set function
+    from app.crud.feed_cache import _feed_memory_cache
+    _feed_memory_cache.clear()
+
     # Fetch master feed again: should hit the cache and return the mutated content
     res_2 = client.get("/feeds/all")
     assert res_2.status_code == 200
@@ -132,6 +140,10 @@ def test_newsletter_feed_limit(client: TestClient, db_session: Session):
         # Clear the cache first to force regeneration
         db_session.query(FeedCache).filter(FeedCache.feed_id == newsletter_id).delete()
         db_session.commit()
+
+        # Clear memory cache since we bypassed the CRUD delete function
+        from app.crud.feed_cache import _feed_memory_cache
+        _feed_memory_cache.clear()
 
         res_limited = client.get(f"/feeds/{newsletter_id}")
         assert res_limited.status_code == 200
