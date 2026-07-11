@@ -3,6 +3,7 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.logging import get_logger
+from app.crud.entries import bump_metadata_version, clear_latest_timestamp_cache
 from app.models.entries import Entry
 from app.models.newsletters import Newsletter, Sender
 from app.schemas.newsletters import NewsletterCreate, NewsletterUpdate
@@ -31,6 +32,41 @@ def get_newsletter_by_identifier(db: Session, identifier: str):
 def get_newsletter_by_slug(db: Session, slug: str):
     """Retrieve a newsletter by its slug."""
     return db.query(Newsletter).filter(Newsletter.slug == slug).first()
+
+
+# Cache of identifier -> (id, slug). Newsletter identity is stable between
+# metadata changes, so this lets the conditional-request (304) hot path resolve
+# a slug/id without touching the DB. Cleared on any newsletter create/update/
+# delete (same points that bump the metadata version). Process-local; assumes a
+# single worker, like the other in-memory caches.
+_identity_cache: dict[str, tuple[str, str | None]] = {}
+
+
+def get_newsletter_identity(db: Session, identifier: str) -> tuple[str, str | None] | None:
+    """Resolve a newsletter's (id, slug) by id or slug, cached in memory.
+
+    Lightweight alternative to get_newsletter_by_identifier for the feed hot
+    path: no entry-count aggregation and no sender load.
+    """
+    if identifier in _identity_cache:
+        return _identity_cache[identifier]
+
+    row = (
+        db.query(Newsletter.id, Newsletter.slug)
+        .filter(or_(Newsletter.id == identifier, Newsletter.slug == identifier))
+        .first()
+    )
+    if row is None:
+        return None
+
+    identity = (row.id, row.slug)
+    _identity_cache[identifier] = identity
+    return identity
+
+
+def clear_identity_cache() -> None:
+    """Invalidate the identifier -> identity cache."""
+    _identity_cache.clear()
 
 
 def get_newsletters(db: Session, skip: int = 0, limit: int = 100):
@@ -82,6 +118,8 @@ def create_newsletter(db: Session, newsletter: NewsletterCreate):
     db.refresh(db_newsletter)
 
     logger.info(f"Successfully created newsletter with id={db_newsletter.id}")
+    bump_metadata_version()
+    clear_identity_cache()
     db_newsletter.entries_count = 0
     return db_newsletter
 
@@ -127,6 +165,8 @@ def update_newsletter(
     db.refresh(db_newsletter)
 
     logger.info(f"Successfully updated newsletter with id={db_newsletter.id}")
+    bump_metadata_version()
+    clear_identity_cache()
     return get_newsletter_by_identifier(db, newsletter_id)
 
 
@@ -139,10 +179,12 @@ def delete_newsletter(db: Session, newsletter_id: str):
 
     db.delete(db_newsletter)
     db.commit()
-    
-    # Invalidate cache since its entries are deleted
-    from app.crud.entries import clear_latest_timestamp_cache
+
+    # Invalidate caches: entries are gone (timestamp cache) and the newsletter
+    # set changed (metadata version), which busts the master feed's ETag too.
     clear_latest_timestamp_cache()
-    
+    bump_metadata_version()
+    clear_identity_cache()
+
     logger.info(f"Successfully deleted newsletter with id={newsletter_id}")
     return db_newsletter

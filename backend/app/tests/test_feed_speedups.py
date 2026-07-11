@@ -1,10 +1,28 @@
 import uuid
+from contextlib import contextmanager
 
 from fastapi.testclient import TestClient
+from sqlalchemy import event
 from sqlalchemy.orm import Session
 
+from app.core.database import engine
 from app.crud.entries import _latest_timestamp_cache
 from app.crud.feed_cache import _feed_memory_cache
+
+
+@contextmanager
+def count_queries():
+    """Count SQL statements executed on the app engine within the block."""
+    statements: list[str] = []
+
+    def _on_execute(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", _on_execute)
+    try:
+        yield statements
+    finally:
+        event.remove(engine, "before_cursor_execute", _on_execute)
 
 
 def test_gzip_compression(client: TestClient, db_session: Session):
@@ -102,3 +120,68 @@ def test_in_memory_cache_layer(client: TestClient, db_session: Session):
     cached_etag, cached_content = _feed_memory_cache[newsletter_id]
     assert response_1.headers.get("ETag") == cached_etag
     assert response_1.text == cached_content
+
+
+def test_newsletter_feed_304_makes_no_db_queries(
+    client: TestClient, db_session: Session
+):
+    """A warm conditional refresh (304) must hit zero database queries.
+
+    This is the RSS-reader hot path: it should be served entirely from the
+    in-memory identity/timestamp/metadata caches. Guards against regressions
+    that reintroduce per-request DB work on the 304 path.
+    """
+    unique_email = f"q304_{uuid.uuid4()}@example.com"
+    newsletter_id = client.post(
+        "/newsletters",
+        json={"name": "Query Count NL", "sender_emails": [unique_email]},
+    ).json()["id"]
+    client.post(
+        f"/newsletters/{newsletter_id}/entries",
+        json={
+            "subject": "Entry",
+            "body": "<p>Content</p>",
+            "message_id": f"<entry_{uuid.uuid4()}@test.com>",
+        },
+    )
+
+    # First fetch warms every cache and yields the ETag.
+    warm = client.get(f"/feeds/{newsletter_id}")
+    assert warm.status_code == 200
+    etag = warm.headers["ETag"]
+
+    # Conditional refresh: expect 304 and no SQL at all.
+    with count_queries() as statements:
+        res = client.get(
+            f"/feeds/{newsletter_id}", headers={"If-None-Match": etag}
+        )
+    assert res.status_code == 304
+    assert statements == [], f"304 path issued DB queries: {statements}"
+
+
+def test_master_feed_304_makes_no_db_queries(
+    client: TestClient, db_session: Session
+):
+    """A warm conditional refresh of the master feed must hit zero DB queries."""
+    unique_email = f"q304master_{uuid.uuid4()}@example.com"
+    newsletter_id = client.post(
+        "/newsletters",
+        json={"name": "Master Query Count NL", "sender_emails": [unique_email]},
+    ).json()["id"]
+    client.post(
+        f"/newsletters/{newsletter_id}/entries",
+        json={
+            "subject": "Entry",
+            "body": "<p>Content</p>",
+            "message_id": f"<entry_{uuid.uuid4()}@test.com>",
+        },
+    )
+
+    warm = client.get("/feeds/all")
+    assert warm.status_code == 200
+    etag = warm.headers["ETag"]
+
+    with count_queries() as statements:
+        res = client.get("/feeds/all", headers={"If-None-Match": etag})
+    assert res.status_code == 304
+    assert statements == [], f"304 path issued DB queries: {statements}"

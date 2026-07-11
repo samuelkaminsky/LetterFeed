@@ -157,5 +157,10 @@ def create_or_update_settings(db: Session, settings: SettingsCreate):
     db.refresh(db_settings)
     logger.info("Successfully updated settings.")
 
+    # Auth username/password may have changed; drop the cached credentials.
+    from app.core.auth import clear_auth_credentials_cache
+
+    clear_auth_credentials_cache()
+
     # Return the updated settings including locked fields for a complete view
     return get_settings(db)

@@ -21,18 +21,24 @@ def setup_and_teardown_db():
     before a test and drops them afterwards. This ensures a clean database for
     every test.
     """
+    from app.core.auth import clear_auth_credentials_cache
     from app.crud.entries import _latest_timestamp_cache
     from app.crud.feed_cache import _feed_memory_cache
+    from app.crud.newsletters import clear_identity_cache
 
-    _feed_memory_cache.clear()
-    _latest_timestamp_cache.clear()
+    def _clear_caches():
+        _feed_memory_cache.clear()
+        _latest_timestamp_cache.clear()
+        clear_identity_cache()
+        clear_auth_credentials_cache()
+
+    _clear_caches()
 
     Base.metadata.create_all(bind=engine)
     yield
     Base.metadata.drop_all(bind=engine)
 
-    _feed_memory_cache.clear()
-    _latest_timestamp_cache.clear()
+    _clear_caches()
 
 
 @pytest.fixture(name="db_session")

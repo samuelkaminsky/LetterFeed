@@ -59,3 +59,19 @@ def start_scheduler_with_interval():
         logger.error(f"Failed to start scheduler: {e}", exc_info=True)
     finally:
         db.close()
+
+
+def reschedule_email_job(interval_minutes: int) -> None:
+    """Update the running email-check job's interval after a settings change."""
+    if not scheduler.running:
+        logger.info(
+            "Scheduler not running; new interval will apply on next startup."
+        )
+        return
+    try:
+        scheduler.reschedule_job(
+            "email_check_job", trigger="interval", minutes=interval_minutes
+        )
+        logger.info(f"Rescheduled email check job to every {interval_minutes} minutes.")
+    except Exception as e:
+        logger.error(f"Failed to reschedule email check job: {e}", exc_info=True)

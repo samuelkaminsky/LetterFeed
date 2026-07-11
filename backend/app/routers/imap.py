@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.imap import _test_imap_connection, get_folders
 from app.core.logging import get_logger
+from app.core.scheduler import reschedule_email_job
 from app.crud.settings import create_or_update_settings, get_settings
 from app.schemas.settings import Settings, SettingsCreate
 from app.services.email_processor import process_emails
@@ -29,7 +30,11 @@ def read_settings(db: Session = Depends(get_db)):
 def update_settings(settings: SettingsCreate, db: Session = Depends(get_db)):
     """Update IMAP settings."""
     logger.info("Request to update IMAP settings")
-    return create_or_update_settings(db=db, settings=settings)
+    updated = create_or_update_settings(db=db, settings=settings)
+    # Apply the (possibly changed) check interval to the running scheduler so it
+    # takes effect without requiring a restart.
+    reschedule_email_job(updated.email_check_interval)
+    return updated
 
 
 @router.post("/imap/test")
