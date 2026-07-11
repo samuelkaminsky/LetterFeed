@@ -64,6 +64,10 @@ def decrypt_string(value: str | None) -> str | None:
         decrypted_bytes = f.decrypt(raw_token.encode())
         return decrypted_bytes.decode()
     except Exception as e:
-        logger.error(f"Failed to decrypt string: {e}", exc_info=True)
-        # Fallback to returning original value to maintain usability
-        return value
+        # A decrypt failure almost always means the SECRET_KEY changed (or is
+        # missing). Return None rather than the ciphertext: handing the encrypted
+        # blob back as if it were the plaintext would feed garbage to IMAP login.
+        logger.error(
+            f"Failed to decrypt string (has SECRET_KEY changed?): {e}", exc_info=True
+        )
+        return None

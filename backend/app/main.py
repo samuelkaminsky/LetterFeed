@@ -21,6 +21,14 @@ async def lifespan(app: FastAPI):
 
     logger.info(f"DATABASE_URL used: {settings.database_url}")
     logger.info("Starting up Letterfeed backend...")
+
+    if settings.production and not settings.secret_key:
+        logger.warning(
+            "SECRET_KEY is not set in production! Login tokens cannot be issued and "
+            "stored credentials fall back to an insecure default encryption key. "
+            "Set LETTERFEED_SECRET_KEY (e.g. `openssl rand -hex 32`)."
+        )
+
     Base.metadata.create_all(bind=engine)
 
     with SessionLocal() as db:
@@ -44,11 +52,7 @@ app = FastAPI(lifespan=lifespan, **fastapi_kwargs)
 # CORS Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://localhost:3000",
-        "http://127.0.0.1:5173",
-    ],
+    allow_origins=settings.cors_origins_list,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

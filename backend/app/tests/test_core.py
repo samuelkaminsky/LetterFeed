@@ -69,6 +69,7 @@ def test_process_emails(mock_imap, db_session: Session):
     mock_mail.login.return_value = ("OK", [b"Login successful"])
     mock_mail.select.return_value = ("OK", [b"1"])
     mock_mail.search.return_value = ("OK", [b"1"])
+    mock_mail.copy.return_value = ("OK", [b"[COPYUID ...]"])
 
     # Mock email content
     mock_msg_bytes = b"From: newsletter@example.com\nSubject: Test Subject\nMessage-ID: <test@test.com>\n\n<p>Test Body</p>"

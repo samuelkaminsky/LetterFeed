@@ -24,24 +24,43 @@ def _get_env_password_hash():
     return None
 
 
+# In-memory cache of the resolved auth credentials. Auth config changes rarely
+# (env is static; DB changes only via settings updates), so caching this removes
+# a DB query from every protected route and every feed request. Cleared by
+# clear_auth_credentials_cache() on settings writes. Process-local; assumes a
+# single worker, like the other in-memory caches.
+_auth_credentials_cache: dict[str, dict] = {}
+
+
 def _get_auth_credentials(db: Session) -> dict:
-    """Get auth credentials, prioritizing environment variables."""
+    """Get auth credentials, prioritizing environment variables. Cached in memory."""
+    if "creds" in _auth_credentials_cache:
+        return _auth_credentials_cache["creds"]
+
     # Env vars take precedence
     if env_settings.auth_username and env_settings.auth_password:
-        return {
+        creds = {
             "username": env_settings.auth_username,
             "password_hash": _get_env_password_hash(),
         }
+    else:
+        # Then check DB
+        db_settings = db.query(SettingsModel).first()
+        if db_settings and db_settings.auth_username and db_settings.auth_password_hash:
+            creds = {
+                "username": db_settings.auth_username,
+                "password_hash": db_settings.auth_password_hash,
+            }
+        else:
+            creds = {}
 
-    # Then check DB
-    db_settings = db.query(SettingsModel).first()
-    if db_settings and db_settings.auth_username and db_settings.auth_password_hash:
-        return {
-            "username": db_settings.auth_username,
-            "password_hash": db_settings.auth_password_hash,
-        }
+    _auth_credentials_cache["creds"] = creds
+    return creds
 
-    return {}
+
+def clear_auth_credentials_cache() -> None:
+    """Invalidate the cached auth credentials (call after a settings change)."""
+    _auth_credentials_cache.clear()
 
 
 def create_access_token(data: dict, expires_delta: timedelta | None = None):

@@ -63,6 +63,21 @@ class Settings(BaseSettings):
     smtp_username: str | None = None
     smtp_password: str | None = None
     notification_email_to: str | None = None
+    cors_origins: str = Field(
+        "",
+        validation_alias=AliasChoices("CORS_ORIGINS", "LETTERFEED_CORS_ORIGINS"),
+    )
+
+    @property
+    def cors_origins_list(self) -> list[str]:
+        """Allowed CORS origins; comma-separated env value, or dev defaults."""
+        if self.cors_origins.strip():
+            return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+        return [
+            "http://localhost:5173",
+            "http://localhost:3000",
+            "http://127.0.0.1:5173",
+        ]
 
 
 settings = Settings()

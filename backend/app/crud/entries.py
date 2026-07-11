@@ -1,4 +1,5 @@
-from datetime import datetime, timedelta
+import secrets
+from datetime import UTC, datetime, timedelta
 
 from nanoid import generate
 from sqlalchemy.orm import Session, joinedload
@@ -11,6 +12,13 @@ from app.schemas.entries import EntryCreate
 logger = get_logger(__name__)
 
 
+def _retention_cutoff() -> datetime:
+    """Return the naive-UTC cutoff before which entries are excluded from feeds."""
+    return datetime.now(UTC).replace(tzinfo=None) - timedelta(
+        days=settings.feed_retention_days
+    )
+
+
 def get_all_entries(db: Session, skip: int = 0, limit: int | None = None):
     """Retrieve all entries from all newsletters, sorted by received date."""
     logger.debug(f"Querying all entries with skip={skip}, limit={limit}")
@@ -21,8 +29,7 @@ def get_all_entries(db: Session, skip: int = 0, limit: int | None = None):
     )
 
     if settings.feed_retention_days is not None:
-        cutoff_date = datetime.now() - timedelta(days=settings.feed_retention_days)
-        query = query.filter(Entry.received_at >= cutoff_date)
+        query = query.filter(Entry.received_at >= _retention_cutoff())
 
     query = query.offset(skip)
 
@@ -45,8 +52,7 @@ def get_entries_by_newsletter(
     )
 
     if settings.feed_retention_days is not None:
-        cutoff_date = datetime.now() - timedelta(days=settings.feed_retention_days)
-        query = query.filter(Entry.received_at >= cutoff_date)
+        query = query.filter(Entry.received_at >= _retention_cutoff())
 
     query = query.offset(skip)
 
@@ -93,6 +99,25 @@ def get_latest_entry_timestamp_cached(
 def clear_latest_timestamp_cache():
     """Clear the in-memory cache of the latest entry timestamps."""
     _latest_timestamp_cache.clear()
+
+
+# Opaque token that changes whenever newsletter *metadata* (name, senders,
+# membership) changes. It is folded into feed ETags so that changes which do not
+# advance the latest-entry timestamp — renames, sender edits, create/delete —
+# still produce a fresh ETag and bust cached feeds. Like the caches above, this
+# is process-local and assumes a single worker (see clear_latest_timestamp_cache).
+_metadata_version = secrets.token_hex(8)
+
+
+def get_metadata_version() -> str:
+    """Return the current newsletter-metadata version token."""
+    return _metadata_version
+
+
+def bump_metadata_version() -> None:
+    """Invalidate feed ETags after a newsletter metadata change."""
+    global _metadata_version
+    _metadata_version = secrets.token_hex(8)
 
 
 def create_entry(db: Session, entry: EntryCreate, newsletter_id: str):

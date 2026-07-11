@@ -346,8 +346,18 @@ def _process_single_email(
     move_folder = newsletter.move_to_folder or settings.move_to_folder or detected_archive
     if move_folder:
         logger.debug(f"Moving email with id={num} to {move_folder}")
-        mail.copy(num, move_folder)
-        mail.store(num, "+FLAGS", "\\Deleted")
+        # Only flag the message for deletion once we've confirmed the copy
+        # succeeded. Otherwise a failed COPY (missing/misnamed folder, quota,
+        # permissions) followed by an expunge would permanently lose the email.
+        copy_status, copy_response = mail.copy(num, move_folder)
+        if copy_status == "OK":
+            mail.store(num, "+FLAGS", "\\Deleted")
+        else:
+            logger.error(
+                f"Failed to copy email id={num} to folder '{move_folder}' "
+                f"(status={copy_status}, response={copy_response}). "
+                "Leaving it in place to avoid data loss."
+            )
     else:
         logger.warning(
             f"Could not archive email with id={num} because no move folder is configured and no Archive folder was auto-detected."

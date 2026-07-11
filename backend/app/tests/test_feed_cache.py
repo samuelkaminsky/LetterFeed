@@ -163,6 +163,86 @@ def test_newsletter_feed_limit(client: TestClient, db_session: Session):
         assert "Entry 1" not in entry_titles
 
 
+def test_feed_refreshes_when_newsletter_renamed(client: TestClient, db_session: Session):
+    """Renaming a newsletter must change the ETag and regenerate the feed.
+
+    A rename does not advance the latest-entry timestamp, so without folding the
+    metadata version into the ETag the cached feed (and 304s) would keep serving
+    the old name indefinitely.
+    """
+    unique_email = f"rename_{uuid.uuid4()}@example.com"
+    create_response = client.post(
+        "/newsletters",
+        json={"name": "Original Name", "sender_emails": [unique_email]},
+    )
+    newsletter_id = create_response.json()["id"]
+
+    client.post(
+        f"/newsletters/{newsletter_id}/entries",
+        json={
+            "subject": "Entry",
+            "body": "<p>Content</p>",
+            "message_id": f"<entry_{uuid.uuid4()}@test.com>",
+        },
+    )
+
+    res_1 = client.get(f"/feeds/{newsletter_id}")
+    assert res_1.status_code == 200
+    assert "Original Name" in res_1.text
+    etag_1 = res_1.headers.get("ETag")
+
+    # Rename the newsletter (senders unchanged).
+    client.put(
+        f"/newsletters/{newsletter_id}",
+        json={"name": "New Name", "sender_emails": [unique_email], "extract_content": False},
+    )
+
+    # A conditional request with the old ETag must NOT get a 304.
+    res_stale = client.get(
+        f"/feeds/{newsletter_id}", headers={"If-None-Match": etag_1}
+    )
+    assert res_stale.status_code == 200
+    assert res_stale.headers.get("ETag") != etag_1
+    assert "New Name" in res_stale.text
+    assert "Original Name" not in res_stale.text
+
+
+def test_master_feed_refreshes_when_newsletter_deleted(
+    client: TestClient, db_session: Session
+):
+    """Deleting a newsletter must drop it from the cached master feed."""
+    email_a = f"keep_{uuid.uuid4()}@example.com"
+    email_b = f"drop_{uuid.uuid4()}@example.com"
+    id_a = client.post(
+        "/newsletters", json={"name": "Keep NL", "sender_emails": [email_a]}
+    ).json()["id"]
+    id_b = client.post(
+        "/newsletters", json={"name": "Drop NL", "sender_emails": [email_b]}
+    ).json()["id"]
+
+    for nid, subj in ((id_a, "Keep Entry"), (id_b, "Drop Entry")):
+        client.post(
+            f"/newsletters/{nid}/entries",
+            json={
+                "subject": subj,
+                "body": "<p>Content</p>",
+                "message_id": f"<entry_{uuid.uuid4()}@test.com>",
+            },
+        )
+
+    res_1 = client.get("/feeds/all")
+    assert res_1.status_code == 200
+    assert "Drop Entry" in res_1.text
+
+    # Delete the second newsletter; its entries should leave the master feed.
+    assert client.delete(f"/newsletters/{id_b}").status_code == 200
+
+    res_2 = client.get("/feeds/all")
+    assert res_2.status_code == 200
+    assert "Keep Entry" in res_2.text
+    assert "Drop Entry" not in res_2.text
+
+
 def test_feed_cache_deleted_on_newsletter_delete(client: TestClient, db_session: Session):
     """Test that deleting a newsletter cleans up its corresponding cache entry."""
     unique_email = f"del_test_{uuid.uuid4()}@example.com"

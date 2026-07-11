@@ -28,6 +28,7 @@ def _setup_test_email_processing(
     msg["Message-ID"] = "<test-message-id>"
     msg.set_payload("<html><body><p>Original Body</p></body></html>", "utf-8")
     mock_mail.fetch.return_value = ("OK", [(b"1 (RFC822)", msg.as_bytes())])
+    mock_mail.copy.return_value = ("OK", [b"[COPYUID ...]"])
 
     return mock_mail, newsletter, settings
 
@@ -82,6 +83,37 @@ def test_process_single_email_with_global_move_folder(db_session: Session):
     # 3. ASSERT
     mock_mail.copy.assert_called_once_with("1", "GlobalArchive")
     mock_mail.store.assert_any_call("1", "+FLAGS", "\\Deleted")
+
+
+def test_process_single_email_not_deleted_when_copy_fails(db_session: Session):
+    """A failed COPY must not flag the email for deletion (avoids data loss)."""
+    # 1. ARRANGE
+    settings_data = SettingsCreate(
+        imap_server="test.com",
+        imap_username="test",
+        imap_password="password",
+        move_to_folder="GlobalArchive",
+    )
+    newsletter_data = NewsletterCreate(
+        name="Test Newsletter", sender_emails=["test@example.com"]
+    )
+    mock_mail, newsletter, settings = _setup_test_email_processing(
+        db_session, newsletter_data, settings_data
+    )
+    # Simulate the destination folder not existing / copy being rejected.
+    mock_mail.copy.return_value = ("NO", [b"[TRYCREATE] Mailbox does not exist"])
+    sender_map = {newsletter.senders[0].email: newsletter}
+
+    # 2. ACT
+    _process_single_email("1", mock_mail, db_session, sender_map, settings)
+
+    # 3. ASSERT
+    mock_mail.copy.assert_called_once_with("1", "GlobalArchive")
+    # The email must NOT be flagged for deletion when the copy did not succeed.
+    delete_calls = [
+        c for c in mock_mail.store.call_args_list if c.args[1:] == ("+FLAGS", "\\Deleted")
+    ]
+    assert delete_calls == []
 
 
 @patch("app.services.email_processor._connect_to_imap")
