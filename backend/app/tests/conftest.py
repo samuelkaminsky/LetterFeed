@@ -25,12 +25,14 @@ def setup_and_teardown_db():
     from app.crud.entries import _latest_timestamp_cache
     from app.crud.feed_cache import _feed_memory_cache
     from app.crud.newsletters import clear_identity_cache
+    from app.crud.settings import clear_master_feed_token_cache
 
     def _clear_caches():
         _feed_memory_cache.clear()
         _latest_timestamp_cache.clear()
         clear_identity_cache()
         clear_auth_credentials_cache()
+        clear_master_feed_token_cache()
 
     _clear_caches()
 

@@ -15,7 +15,7 @@ from app.core.logging import get_logger
 from app.crud.entries import get_latest_entry_timestamp_cached, get_metadata_version
 from app.crud.feed_cache import get_cached_feed, set_cached_feed
 from app.crud.newsletters import get_newsletter_identity
-from app.crud.settings import get_settings
+from app.crud.settings import get_master_feed_token
 from app.services.feed_generator import generate_feed, generate_master_feed
 
 logger = get_logger(__name__)
@@ -31,7 +31,9 @@ def _generate_etag(identifier: str, timestamp: datetime | None) -> str:
     membership changes only because entries age out still refreshes at least
     daily.
     """
-    ts_str = str(timestamp.timestamp()) if timestamp else "empty"
+    # isoformat is timezone-independent; .timestamp() on a naive datetime would
+    # assume the server's local timezone and change the ETag across environments.
+    ts_str = timestamp.isoformat() if timestamp else "empty"
     parts = [identifier, ts_str, get_metadata_version()]
     if settings.feed_retention_days is not None:
         parts.append(datetime.now(UTC).date().isoformat())
@@ -118,13 +120,15 @@ def get_master_feed(
     if_modified_since: str | None = Header(default=None),
 ):
     """Generate a master Atom feed for all newsletters."""
-    # Authenticate the master feed if auth is enabled
+    # Authenticate the master feed if auth is enabled. Both is_auth_enabled and
+    # the master token are served from in-memory caches, so a warm secured 304
+    # still issues zero DB queries.
     if is_auth_enabled(db):
-        db_settings = get_settings(db)
+        master_token = get_master_feed_token(db)
         if (
             not token
-            or not db_settings.master_feed_token
-            or not secrets.compare_digest(token, db_settings.master_feed_token)
+            or not master_token
+            or not secrets.compare_digest(token, master_token)
         ):
             logger.warning(
                 "Unauthorized attempt to access master feed (invalid or missing token)"

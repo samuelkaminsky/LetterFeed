@@ -185,3 +185,72 @@ def test_master_feed_304_makes_no_db_queries(
         res = client.get("/feeds/all", headers={"If-None-Match": etag})
     assert res.status_code == 304
     assert statements == [], f"304 path issued DB queries: {statements}"
+
+
+def test_missing_feed_identifier_is_negatively_cached(
+    client: TestClient, db_session: Session
+):
+    """Repeated requests for a non-existent feed must not hit the DB every time."""
+    missing = f"does-not-exist-{uuid.uuid4()}"
+
+    # First request populates the negative cache.
+    assert client.get(f"/feeds/{missing}").status_code == 404
+
+    # Second request must be served from the negative cache: 404, zero queries.
+    with count_queries() as statements:
+        res = client.get(f"/feeds/{missing}")
+    assert res.status_code == 404
+    assert statements == [], f"missing-feed path issued DB queries: {statements}"
+
+
+def test_secured_master_feed_304_makes_no_db_queries(
+    client: TestClient, db_session: Session
+):
+    """A warm 304 on the master feed with auth enabled must hit zero DB queries.
+
+    Exercises the cached master-feed token: with auth on, the token check must
+    not fall back to a per-request settings query.
+    """
+    from app.crud.settings import create_or_update_settings, get_master_feed_token
+    from app.schemas.settings import SettingsCreate
+
+    # Create content before enabling auth (newsletter routes become protected).
+    unique_email = f"secmaster_{uuid.uuid4()}@example.com"
+    newsletter_id = client.post(
+        "/newsletters",
+        json={"name": "Secured Master NL", "sender_emails": [unique_email]},
+    ).json()["id"]
+    client.post(
+        f"/newsletters/{newsletter_id}/entries",
+        json={
+            "subject": "Entry",
+            "body": "<p>Content</p>",
+            "message_id": f"<entry_{uuid.uuid4()}@test.com>",
+        },
+    )
+
+    # Enable auth, then resolve the (now-required) master feed token.
+    create_or_update_settings(
+        db_session,
+        SettingsCreate(
+            imap_server="test.com",
+            imap_username="test",
+            imap_password="password",
+            auth_username="admin",
+            auth_password="password",
+        ),
+    )
+    token = get_master_feed_token(db_session)
+    assert token
+
+    # Warm every cache with an authorized fetch.
+    warm = client.get(f"/feeds/all?token={token}")
+    assert warm.status_code == 200
+    etag = warm.headers["ETag"]
+
+    with count_queries() as statements:
+        res = client.get(
+            f"/feeds/all?token={token}", headers={"If-None-Match": etag}
+        )
+    assert res.status_code == 304
+    assert statements == [], f"secured 304 path issued DB queries: {statements}"
