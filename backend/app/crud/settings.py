@@ -47,6 +47,29 @@ def create_initial_settings(db: Session):
         logger.info("Default settings created from environment variables.")
 
 
+def _ensure_master_feed_token(db: Session, db_settings: SettingsModel) -> str | None:
+    """Return the settings row's master feed token, generating one if absent.
+
+    Single source of truth for token generation (legacy databases created before
+    the token column had a value). New rows get a token at creation time
+    (create_initial_settings at startup, or the get_settings call at the end of
+    create_or_update_settings), so this lazy path only fires for old databases.
+    """
+    if db_settings.master_feed_token:
+        return db_settings.master_feed_token
+    try:
+        import secrets
+
+        db_settings.master_feed_token = secrets.token_hex(16)
+        db.commit()
+        db.refresh(db_settings)
+        logger.info("Generated master_feed_token for legacy database.")
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to generate master_feed_token: {e}")
+    return db_settings.master_feed_token
+
+
 def get_settings(db: Session, with_password: bool = False) -> SettingsSchema:
     """Retrieve application settings, prioritizing environment variables over database."""
     logger.debug("Querying for settings")
@@ -56,17 +79,8 @@ def get_settings(db: Session, with_password: bool = False) -> SettingsSchema:
         # This should not happen if create_initial_settings is called at startup.
         raise RuntimeError("Settings not initialized.")
 
-    # Ensure master_feed_token is present, generate if missing (for legacy databases)
-    if not db_settings.master_feed_token:
-        try:
-            import secrets
-            db_settings.master_feed_token = secrets.token_hex(16)
-            db.commit()
-            db.refresh(db_settings)
-            logger.info("Generated master_feed_token for legacy database.")
-        except Exception as e:
-            db.rollback()
-            logger.error(f"Failed to generate master_feed_token: {e}")
+    # Ensure master_feed_token is present (generates one for legacy databases).
+    _ensure_master_feed_token(db, db_settings)
 
     # Build dictionary from DB model attributes, handling possible None values
     db_data = {
@@ -135,22 +149,7 @@ def get_master_feed_token(db: Session) -> str | None:
         return _master_feed_token_cache["token"]
 
     db_settings = db.query(SettingsModel).first()
-    token = db_settings.master_feed_token if db_settings else None
-
-    # Legacy DBs may have a settings row without a token; generate one.
-    if db_settings and not token:
-        try:
-            import secrets
-
-            token = secrets.token_hex(16)
-            db_settings.master_feed_token = token
-            db.commit()
-            db.refresh(db_settings)
-            logger.info("Generated master_feed_token for legacy database.")
-        except Exception as e:
-            db.rollback()
-            logger.error(f"Failed to generate master_feed_token: {e}")
-            token = db_settings.master_feed_token
+    token = _ensure_master_feed_token(db, db_settings) if db_settings else None
 
     _master_feed_token_cache["token"] = token
     return token

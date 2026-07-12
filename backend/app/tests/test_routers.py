@@ -37,6 +37,28 @@ def test_update_imap_settings(client: TestClient):
     assert response.json()["mark_as_read"]
 
 
+def test_update_imap_settings_rejects_nonpositive_interval(client: TestClient):
+    """email_check_interval <= 0 must be rejected (would unschedule the job)."""
+    base = {
+        "imap_server": "imap.example.com",
+        "imap_username": "test@example.com",
+        "imap_password": "password",
+        "search_folder": "INBOX",
+    }
+    for bad in (0, -5):
+        response = client.post(
+            "/imap/settings", json={**base, "email_check_interval": bad}
+        )
+        assert response.status_code == 422, f"interval={bad} should be rejected"
+
+    # A positive interval is still accepted.
+    response = client.post(
+        "/imap/settings", json={**base, "email_check_interval": 30}
+    )
+    assert response.status_code == 200
+    assert response.json()["email_check_interval"] == 30
+
+
 def test_get_imap_settings(client: TestClient):
     """Test getting IMAP settings."""
     settings_data = {

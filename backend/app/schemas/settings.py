@@ -21,6 +21,9 @@ class SettingsCreate(SettingsBase):
 
     imap_password: str | None = None
     auth_password: str | None = None
+    # Must be >= 1: a 0/negative interval makes APScheduler raise and would leave
+    # the email-check job unscheduled (no email processing).
+    email_check_interval: int = Field(default=15, ge=1)
 
 
 class Settings(SettingsBase):
