@@ -1,9 +1,16 @@
 #!/bin/bash
 set -e
 
-# Clear docker space to prevent "No space left on device" errors
-docker system prune -a --volumes -f || true
-docker image prune -a -f || true
+# Clear docker space to prevent "No space left on device" errors.
+# This script runs on every VM boot before `docker compose up`, when nothing is
+# running, so we prune conservatively:
+#   - no --volumes: otherwise the (then-unused) letterfeed_data volume would be
+#     deleted, wiping the SQLite database.
+#   - no -a: otherwise the tagged compose images (unused pre-`up`) would be
+#     deleted and re-downloaded on every boot. `docker compose pull` below still
+#     guarantees the latest images; here we only reclaim dangling layers/cache.
+docker system prune -f || true
+docker image prune -f || true
 apt-get clean || true
 
 # Update and install Docker using the official repo to ensure docker-compose-plugin is available
