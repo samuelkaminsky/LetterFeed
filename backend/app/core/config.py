@@ -15,6 +15,10 @@ class Settings(BaseSettings):
         False,
         validation_alias=AliasChoices("PRODUCTION", "LETTERFEED_PRODUCTION"),
     )
+    git_sha: str = Field(
+        "unknown",
+        validation_alias=AliasChoices("GIT_SHA", "LETTERFEED_GIT_SHA"),
+    )
 
     database_url: str = Field(
         "sqlite:////data/letterfeed.db",

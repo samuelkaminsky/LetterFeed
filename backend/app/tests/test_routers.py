@@ -12,7 +12,10 @@ def test_health_check(client: TestClient):
     """Test the health check endpoint."""
     response = client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    body = response.json()
+    assert body["status"] == "ok"
+    # version is present; defaults to "unknown" when GIT_SHA is not set (dev/test).
+    assert "version" in body
 
 
 def test_update_imap_settings(client: TestClient):
