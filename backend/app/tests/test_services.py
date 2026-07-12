@@ -1,6 +1,6 @@
 import uuid
 import xml.etree.ElementTree as ET
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from fastapi import Request
 from sqlalchemy.orm import Session
@@ -132,15 +132,19 @@ def test_generate_feed_with_proxy_request(db_session: Session):
         "x-forwarded-host": "letterfeed.example.com",
         "x-forwarded-proto": "https"
     }
-    
-    # Generate the feed
-    feed_xml = generate_feed(db_session, newsletter.id, request=mock_request)
+
+    # The forwarded host is only reflected when it is a configured/trusted host.
+    with patch(
+        "app.services.feed_generator._trusted_hosts",
+        return_value={"letterfeed.example.com"},
+    ):
+        feed_xml = generate_feed(db_session, newsletter.id, request=mock_request)
     assert feed_xml is not None
-    
+
     # Parse the feed XML to verify content
     root = ET.fromstring(feed_xml)
     ns = {"atom": "http://www.w3.org/2005/Atom"}
-    
+
     # Check for the self link
     links = root.findall("atom:link", ns)
     self_link = next(link for link in links if link.get("rel") == "self")
@@ -161,16 +165,43 @@ def test_generate_master_feed_with_proxy_request(db_session: Session):
         "x-forwarded-host": "letterfeed.example.com",
         "x-forwarded-proto": "https"
     }
-    
-    # Generate the feed
-    feed_xml = generate_master_feed(db_session, request=mock_request)
+
+    # The forwarded host is only reflected when it is a configured/trusted host.
+    with patch(
+        "app.services.feed_generator._trusted_hosts",
+        return_value={"letterfeed.example.com"},
+    ):
+        feed_xml = generate_master_feed(db_session, request=mock_request)
     assert feed_xml is not None
-    
+
     # Parse the feed XML to verify content
     root = ET.fromstring(feed_xml)
     ns = {"atom": "http://www.w3.org/2005/Atom"}
-    
+
     # Check for the self link
     links = root.findall("atom:link", ns)
     self_link = next(link for link in links if link.get("rel") == "self")
     assert self_link.get("href") == "https://letterfeed.example.com/api/feeds/all"
+
+
+def test_generate_feed_ignores_untrusted_forwarded_host(db_session: Session):
+    """An attacker-supplied X-Forwarded-Host must not be reflected into feed links."""
+    newsletter = create_newsletter(
+        db_session,
+        NewsletterCreate(name="Poison Test", sender_emails=["poison@example.com"]),
+    )
+
+    mock_request = MagicMock(spec=Request)
+    mock_request.url.scheme = "http"
+    mock_request.headers = {
+        "x-forwarded-host": "evil.example.net",
+        "x-forwarded-proto": "https",
+        "host": "evil.example.net",
+    }
+
+    # No trusted hosts configured -> the spoofed header is ignored and generation
+    # falls back to the configured app_base_url instead of the attacker's host.
+    with patch("app.services.feed_generator._trusted_hosts", return_value=set()):
+        feed_xml = generate_feed(db_session, newsletter.id, request=mock_request)
+    assert feed_xml is not None
+    assert b"evil.example.net" not in feed_xml

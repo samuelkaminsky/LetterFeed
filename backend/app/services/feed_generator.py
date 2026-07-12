@@ -1,4 +1,5 @@
 from typing import List
+from urllib.parse import urlsplit
 
 from dateutil import tz
 from fastapi import Request
@@ -11,21 +12,40 @@ from app.crud.newsletters import get_newsletter_by_identifier
 from app.models.entries import Entry
 
 
+def _trusted_hosts() -> set[str]:
+    """Hostnames we are willing to reflect into generated feed URLs.
+
+    Derived from the operator-configured APP_BASE_URL and CORS origins. Any
+    Host / X-Forwarded-Host outside this set is attacker-controllable and must
+    NOT be trusted: it would otherwise be baked into the cached feed's self /
+    alternate / logo links and served to every subscriber (cache poisoning).
+    """
+    hosts: set[str] = set()
+    for origin in (settings.app_base_url, *settings.cors_origins_list):
+        netloc = urlsplit(origin if "://" in origin else f"//{origin}").netloc.lower()
+        if netloc and "backend:8000" not in netloc:
+            hosts.add(netloc)
+    return hosts
+
+
 def _get_base_url(request: Request | None = None, base_url_param: str | None = None) -> str:
     """Determine the application base URL dynamically from request headers or config."""
     if request is not None:
+        trusted = _trusted_hosts()
         forwarded_host = request.headers.get("x-forwarded-host")
         forwarded_proto = request.headers.get("x-forwarded-proto", "http")
-        if forwarded_host:
+        # Only reflect a forwarded/Host header if it matches a configured host,
+        # so an arbitrary attacker-supplied header can't poison the feed.
+        if forwarded_host and forwarded_host.lower() in trusted:
             return f"{forwarded_proto}://{forwarded_host}".rstrip("/")
 
         # If base_url_param is provided, use it if it's not the internal backend host
         if base_url_param and "backend:8000" not in base_url_param:
             return base_url_param.rstrip("/")
 
-        # Fallback to standard Host header if not backend:8000
+        # Fallback to standard Host header if it is a configured host
         host = request.headers.get("host")
-        if host and host != "backend:8000":
+        if host and host.lower() in trusted:
             return f"{request.url.scheme}://{host}".rstrip("/")
 
     if base_url_param and "backend:8000" not in base_url_param:

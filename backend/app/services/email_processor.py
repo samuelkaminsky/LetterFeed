@@ -155,6 +155,56 @@ def _get_email_body(msg: Message) -> str:
     return html_body or text_body
 
 
+# Tag/attribute allowlist applied to every stored newsletter body. Note that
+# `style` is intentionally NOT allowed on any element: attacker-controlled inline
+# CSS enables data exfiltration / clickjacking in feed readers that honor it.
+ALLOWED_TAGS = {
+    "p",
+    "strong",
+    "em",
+    "u",
+    "h3",
+    "h4",
+    "ul",
+    "ol",
+    "li",
+    "a",
+    "img",
+    "br",
+    "div",
+    "span",
+    "figure",
+    "figcaption",
+}
+ALLOWED_ATTRIBUTES = {
+    "a": {"href", "title"},
+    "img": {"src", "alt", "width", "height"},
+}
+
+
+def _sanitize_html(raw_html_content: str) -> str:
+    """Decode transfer encoding, strip control chars, and sanitize to the allowlist.
+
+    This is the safety net applied to EVERY newsletter body regardless of whether
+    readability extraction runs, so raw attacker-controlled email HTML (scripts,
+    event handlers, javascript: URLs) is never stored or served verbatim.
+    """
+    try:
+        decoded_bytes = quopri.decodestring(raw_html_content.encode("utf-8"))
+        clean_html_str = decoded_bytes.decode("utf-8", "ignore")
+    except Exception:
+        # If quopri fails, assume it's already decoded.
+        clean_html_str = raw_html_content
+
+    # Remove NULL bytes and other control characters that can cause lxml to fail.
+    # We keep tab (\x09), newline (\x0a), and carriage return (\x0d)
+    clean_html_str = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", clean_html_str)
+
+    return nh3.clean(
+        clean_html_str, tags=ALLOWED_TAGS, attributes=ALLOWED_ATTRIBUTES
+    )
+
+
 def _extract_and_clean_html(raw_html_content: str) -> dict[str, str]:
     """Decode, extract, and sanitize newsletter HTML."""
     try:
@@ -171,29 +221,6 @@ def _extract_and_clean_html(raw_html_content: str) -> dict[str, str]:
     doc = Document(clean_html_str)
     extracted_body = doc.summary(html_partial=True)
 
-    ALLOWED_TAGS = {
-        "p",
-        "strong",
-        "em",
-        "u",
-        "h3",
-        "h4",
-        "ul",
-        "ol",
-        "li",
-        "a",
-        "img",
-        "br",
-        "div",
-        "span",
-        "figure",
-        "figcaption",
-    }
-    ALLOWED_ATTRIBUTES = {
-        "a": {"href", "title"},
-        "img": {"src", "alt", "width", "height"},
-        "*": {"style"},
-    }
     cleaned_body = nh3.clean(
         extracted_body, tags=ALLOWED_TAGS, attributes=ALLOWED_ATTRIBUTES
     )
@@ -321,8 +348,16 @@ def _process_single_email(
                 body = cleaned_data["body"]
             except Exception as e:
                 logger.warning(
-                    f"Failed to extract content from email '{subject}' from {sender}: {e}. Using raw body."
+                    f"Failed to extract content from email '{subject}' from {sender}: {e}. "
+                    "Falling back to the sanitized raw body."
                 )
+                # Readability failed, but the raw body must still be sanitized
+                # before it is stored/served — never fall back to raw HTML.
+                body = _sanitize_html(body)
+        else:
+            # Extraction disabled: sanitize the raw body so unsafe email HTML
+            # (scripts, event handlers, etc.) is never stored verbatim.
+            body = _sanitize_html(body)
 
         entry_schema = EntryCreate(
             subject=subject, body=body, message_id=message_id, received_at=received_at

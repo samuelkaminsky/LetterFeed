@@ -222,6 +222,49 @@ def test_process_single_email_with_content_extraction(
     assert entry_create_arg.subject == "Test Email"
 
 
+def test_process_single_email_sanitizes_body_without_extraction(db_session: Session):
+    """Raw email HTML must be sanitized even when extract_content is disabled."""
+    # 1. ARRANGE
+    settings_data = SettingsCreate(
+        imap_server="test.com", imap_username="test", imap_password="password"
+    )
+    newsletter_data = NewsletterCreate(
+        name="Test Newsletter",
+        sender_emails=["test@example.com"],
+        extract_content=False,  # default: no readability extraction
+    )
+    settings = create_or_update_settings(db_session, settings_data)
+    newsletter = create_newsletter(db_session, newsletter_data)
+
+    mock_mail = MagicMock(spec=imaplib.IMAP4_SSL)
+    msg = Message()
+    msg["From"] = "test@example.com"
+    msg["Subject"] = "Malicious Email"
+    msg["Message-ID"] = "<test-message-id-xss>"
+    malicious = (
+        "<p>Hello</p>"
+        "<script>alert(1)</script>"
+        '<img src=x onerror="alert(2)">'
+        '<a href="javascript:alert(3)">click</a>'
+    )
+    msg.set_payload(malicious, "utf-8")
+    mock_mail.fetch.return_value = ("OK", [(b"1 (RFC822)", msg.as_bytes())])
+
+    sender_map = {newsletter.senders[0].email: newsletter}
+
+    # 2. ACT
+    with patch("app.services.email_processor.create_entry") as mock_create_entry:
+        _process_single_email("1", mock_mail, db_session, sender_map, settings)
+
+    # 3. ASSERT
+    mock_create_entry.assert_called_once()
+    stored_body = mock_create_entry.call_args[0][1].body
+    assert "<script>" not in stored_body
+    assert "onerror" not in stored_body
+    assert "javascript:" not in stored_body
+    assert "Hello" in stored_body
+
+
 def test_process_single_email_with_encoded_from_header(db_session: Session):
     """Test that an encoded From header is correctly decoded for the newsletter name."""
     # 1. ARRANGE
@@ -310,9 +353,10 @@ def test_process_single_email_with_null_bytes_in_body(db_session: Session):
         mock_create_entry.assert_called_once()
         entry_create_arg = mock_create_entry.call_args[0][1]
 
-        # The body should be the original (but decoded) body, since extraction failed
-        # Note: _get_email_body will decode the payload.
-        assert "Hello\x00 World" in entry_create_arg.body
+        # Extraction failed, so we fall back to the SANITIZED raw body: the NULL
+        # byte and unsafe wrapper tags are stripped, but the text survives.
+        assert "\x00" not in entry_create_arg.body
+        assert "Hello World" in entry_create_arg.body
 
 
 def test_process_single_email_already_processed_still_archived(db_session: Session):
