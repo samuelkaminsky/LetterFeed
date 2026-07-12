@@ -35,6 +35,9 @@ def start_scheduler_with_interval():
     try:
         settings = get_settings(db)
         interval = settings.email_check_interval if settings else 15
+        # Guard against a bad persisted value: minutes<=0 makes APScheduler raise
+        # and would leave the job (and email processing) unscheduled.
+        interval = max(1, interval)
         logger.info(f"Setting scheduler interval to {interval} minutes")
         scheduler.add_job(
             job,
@@ -68,6 +71,7 @@ def reschedule_email_job(interval_minutes: int) -> None:
             "Scheduler not running; new interval will apply on next startup."
         )
         return
+    interval_minutes = max(1, interval_minutes)
     try:
         scheduler.reschedule_job(
             "email_check_job", trigger="interval", minutes=interval_minutes
