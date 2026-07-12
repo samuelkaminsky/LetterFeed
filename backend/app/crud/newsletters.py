@@ -1,3 +1,4 @@
+import threading
 from collections import OrderedDict
 
 from nanoid import generate
@@ -50,6 +51,11 @@ _identity_cache: dict[str, tuple[str, str | None]] = {}
 _MISSING_IDENTITY_CACHE_MAX = 1024
 _missing_identity_cache: OrderedDict[str, None] = OrderedDict()
 
+# Sync cache access: sync FastAPI endpoints run in a threadpool, so concurrent
+# requests can touch these caches at once. The compound OrderedDict eviction
+# (move_to_end / popitem) is not safe to interleave, so guard all access.
+_identity_cache_lock = threading.Lock()
+
 
 def get_newsletter_identity(db: Session, identifier: str) -> tuple[str, str | None] | None:
     """Resolve a newsletter's (id, slug) by id or slug, cached in memory.
@@ -58,33 +64,38 @@ def get_newsletter_identity(db: Session, identifier: str) -> tuple[str, str | No
     path: no entry-count aggregation and no sender load. Both hits and misses are
     cached (misses in a bounded LRU) to keep the path DB-free.
     """
-    if identifier in _identity_cache:
-        return _identity_cache[identifier]
-    if identifier in _missing_identity_cache:
-        _missing_identity_cache.move_to_end(identifier)
-        return None
+    with _identity_cache_lock:
+        if identifier in _identity_cache:
+            return _identity_cache[identifier]
+        if identifier in _missing_identity_cache:
+            _missing_identity_cache.move_to_end(identifier)
+            return None
 
+    # Query outside the lock so DB I/O never blocks other cache readers.
     row = (
         db.query(Newsletter.id, Newsletter.slug)
         .filter(or_(Newsletter.id == identifier, Newsletter.slug == identifier))
         .first()
     )
-    if row is None:
-        _missing_identity_cache[identifier] = None
-        _missing_identity_cache.move_to_end(identifier)
-        if len(_missing_identity_cache) > _MISSING_IDENTITY_CACHE_MAX:
-            _missing_identity_cache.popitem(last=False)  # evict least-recently-used
-        return None
 
-    identity = (row.id, row.slug)
-    _identity_cache[identifier] = identity
-    return identity
+    with _identity_cache_lock:
+        if row is None:
+            _missing_identity_cache[identifier] = None
+            _missing_identity_cache.move_to_end(identifier)
+            while len(_missing_identity_cache) > _MISSING_IDENTITY_CACHE_MAX:
+                _missing_identity_cache.popitem(last=False)  # evict least-recent
+            return None
+
+        identity = (row.id, row.slug)
+        _identity_cache[identifier] = identity
+        return identity
 
 
 def clear_identity_cache() -> None:
     """Invalidate both the positive and negative identity caches."""
-    _identity_cache.clear()
-    _missing_identity_cache.clear()
+    with _identity_cache_lock:
+        _identity_cache.clear()
+        _missing_identity_cache.clear()
 
 
 def get_newsletters(db: Session, skip: int = 0, limit: int = 100):
