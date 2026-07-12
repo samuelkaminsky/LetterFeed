@@ -1,3 +1,5 @@
+from collections import OrderedDict
+
 from nanoid import generate
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, selectinload
@@ -41,15 +43,26 @@ def get_newsletter_by_slug(db: Session, slug: str):
 # single worker, like the other in-memory caches.
 _identity_cache: dict[str, tuple[str, str | None]] = {}
 
+# Bounded negative cache of identifiers known not to exist, so a flood of bad
+# feed requests doesn't hit the DB on every call. Bounded (LRU eviction) so a
+# flood of *distinct* invalid identifiers can't exhaust memory. Cleared whenever
+# a newsletter changes, since a previously-missing slug may now be valid.
+_MISSING_IDENTITY_CACHE_MAX = 1024
+_missing_identity_cache: OrderedDict[str, None] = OrderedDict()
+
 
 def get_newsletter_identity(db: Session, identifier: str) -> tuple[str, str | None] | None:
     """Resolve a newsletter's (id, slug) by id or slug, cached in memory.
 
     Lightweight alternative to get_newsletter_by_identifier for the feed hot
-    path: no entry-count aggregation and no sender load.
+    path: no entry-count aggregation and no sender load. Both hits and misses are
+    cached (misses in a bounded LRU) to keep the path DB-free.
     """
     if identifier in _identity_cache:
         return _identity_cache[identifier]
+    if identifier in _missing_identity_cache:
+        _missing_identity_cache.move_to_end(identifier)
+        return None
 
     row = (
         db.query(Newsletter.id, Newsletter.slug)
@@ -57,6 +70,10 @@ def get_newsletter_identity(db: Session, identifier: str) -> tuple[str, str | No
         .first()
     )
     if row is None:
+        _missing_identity_cache[identifier] = None
+        _missing_identity_cache.move_to_end(identifier)
+        if len(_missing_identity_cache) > _MISSING_IDENTITY_CACHE_MAX:
+            _missing_identity_cache.popitem(last=False)  # evict least-recently-used
         return None
 
     identity = (row.id, row.slug)
@@ -65,8 +82,9 @@ def get_newsletter_identity(db: Session, identifier: str) -> tuple[str, str | No
 
 
 def clear_identity_cache() -> None:
-    """Invalidate the identifier -> identity cache."""
+    """Invalidate both the positive and negative identity caches."""
     _identity_cache.clear()
+    _missing_identity_cache.clear()
 
 
 def get_newsletters(db: Session, skip: int = 0, limit: int = 100):

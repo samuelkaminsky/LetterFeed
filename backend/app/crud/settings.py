@@ -123,6 +123,44 @@ def get_settings(db: Session, with_password: bool = False) -> SettingsSchema:
     return settings_schema
 
 
+# In-memory cache of the master feed token. It is set once and effectively never
+# changes, but caching it keeps the secured master-feed 304 path free of DB
+# queries. Cleared on settings writes. Process-local; assumes a single worker.
+_master_feed_token_cache: dict[str, str | None] = {}
+
+
+def get_master_feed_token(db: Session) -> str | None:
+    """Return the master feed token, cached in memory."""
+    if "token" in _master_feed_token_cache:
+        return _master_feed_token_cache["token"]
+
+    db_settings = db.query(SettingsModel).first()
+    token = db_settings.master_feed_token if db_settings else None
+
+    # Legacy DBs may have a settings row without a token; generate one.
+    if db_settings and not token:
+        try:
+            import secrets
+
+            token = secrets.token_hex(16)
+            db_settings.master_feed_token = token
+            db.commit()
+            db.refresh(db_settings)
+            logger.info("Generated master_feed_token for legacy database.")
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Failed to generate master_feed_token: {e}")
+            token = db_settings.master_feed_token
+
+    _master_feed_token_cache["token"] = token
+    return token
+
+
+def clear_master_feed_token_cache() -> None:
+    """Invalidate the cached master feed token (call after a settings change)."""
+    _master_feed_token_cache.clear()
+
+
 def create_or_update_settings(db: Session, settings: SettingsCreate):
     """Create or update application settings."""
     logger.info("Creating or updating settings")
@@ -161,6 +199,7 @@ def create_or_update_settings(db: Session, settings: SettingsCreate):
     from app.core.auth import clear_auth_credentials_cache
 
     clear_auth_credentials_cache()
+    clear_master_feed_token_cache()
 
     # Return the updated settings including locked fields for a complete view
     return get_settings(db)
