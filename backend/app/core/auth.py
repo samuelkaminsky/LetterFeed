@@ -10,8 +10,11 @@ from sqlalchemy.orm import Session
 from app.core.config import settings as env_settings
 from app.core.database import get_db
 from app.core.hashing import get_password_hash
+from app.core.logging import get_logger
 from app.models.settings import Settings as SettingsModel
 from app.schemas.auth import TokenData
+
+logger = get_logger(__name__)
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
 
@@ -87,8 +90,23 @@ def protected_route(
     """Dependency to protect routes with JWTs."""
     auth_creds = _get_auth_credentials(db)
 
-    # If no auth credentials are set up, access is allowed.
+    # If no auth credentials are set up, access is allowed in dev so first-run
+    # setup is frictionless. In production this fails CLOSED instead: an
+    # unconfigured instance must not serve protected routes (e.g. /imap/settings,
+    # which could otherwise be used to redirect IMAP login and exfiltrate stored
+    # credentials). Configure LETTERFEED_AUTH_USERNAME / LETTERFEED_AUTH_PASSWORD
+    # (or the settings row) before deploying.
     if not auth_creds.get("username") or not auth_creds.get("password_hash"):
+        if env_settings.production:
+            logger.error(
+                "Blocked a protected request: authentication is not configured while "
+                "running in PRODUCTION. Set LETTERFEED_AUTH_USERNAME and "
+                "LETTERFEED_AUTH_PASSWORD to enable access."
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Authentication is not configured on the server.",
+            )
         return
 
     # Check HttpOnly cookies if Authorization header token is missing

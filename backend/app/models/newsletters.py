@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, ForeignKey, String
+from sqlalchemy import Boolean, Column, ForeignKey, String, UniqueConstraint
 from sqlalchemy.orm import relationship
 
 from app.core.database import Base
@@ -31,7 +31,11 @@ class Sender(Base):
     __tablename__ = "senders"
 
     id = Column(String, primary_key=True, index=True)
-    email = Column(String, unique=True, index=True, nullable=False)
+    email = Column(String, index=True, nullable=False)
     newsletter_id = Column(String, ForeignKey("newsletters.id"), nullable=False)
 
     newsletter = relationship("Newsletter", back_populates="senders")
+
+    __table_args__ = (
+        UniqueConstraint("email", "newsletter_id", name="uq_sender_email_newsletter"),
+    )

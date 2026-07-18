@@ -35,9 +35,12 @@ def create_initial_settings(db: Session):
 
         # Encrypt the initial IMAP password if provided via environment
         if "imap_password" in env_data_for_db and env_data_for_db["imap_password"]:
-            env_data_for_db["imap_password"] = encrypt_string(env_data_for_db["imap_password"])
+            env_data_for_db["imap_password"] = encrypt_string(
+                env_data_for_db["imap_password"]
+            )
 
         import secrets
+
         env_data_for_db["master_feed_token"] = secrets.token_hex(16)
 
         db_settings = SettingsModel(**env_data_for_db)
@@ -122,7 +125,9 @@ def get_settings(db: Session, with_password: bool = False) -> SettingsSchema:
                     db_settings.imap_password = encrypt_string(raw_password)
                     db.commit()
                     db.refresh(db_settings)
-                    logger.info("Auto-migrated legacy plaintext IMAP password to encrypted format.")
+                    logger.info(
+                        "Auto-migrated legacy plaintext IMAP password to encrypted format."
+                    )
                 except Exception as e:
                     db.rollback()
                     logger.error(f"Failed to auto-migrate legacy IMAP password: {e}")

@@ -1,3 +1,4 @@
+from collections import OrderedDict
 from datetime import datetime
 
 from sqlalchemy.orm import Session
@@ -7,28 +8,39 @@ from app.models.feed_cache import FeedCache
 
 logger = get_logger(__name__)
 
-# In-memory cache for feeds: feed_id -> (etag, content_str)
-_feed_memory_cache = {}
+# Bounded in-memory cache for feeds: feed_id -> (etag, content_str)
+_FEED_MEMORY_CACHE_MAX = 64
+_feed_memory_cache: OrderedDict[str, tuple[str, str]] = OrderedDict()
 
 
 def get_cached_feed(db: Session, feed_id: str, current_etag: str) -> str | None:
     """Retrieve cached feed content if the etag matches current_etag."""
-    logger.debug(f"Checking cache for feed_id={feed_id} with current_etag={current_etag}")
-    
+    logger.debug(
+        f"Checking cache for feed_id={feed_id} with current_etag={current_etag}"
+    )
+
     # Check in-memory cache first
     if feed_id in _feed_memory_cache:
         cached_etag, cached_content = _feed_memory_cache[feed_id]
         if cached_etag == current_etag:
-            logger.debug(f"Memory cache hit for feed_id={feed_id} with etag={current_etag}")
+            logger.debug(
+                f"Memory cache hit for feed_id={feed_id} with etag={current_etag}"
+            )
+            _feed_memory_cache.move_to_end(feed_id)
             return cached_content
 
     # Fall back to DB cache
     cache_entry = db.query(FeedCache).filter(FeedCache.feed_id == feed_id).first()
     if cache_entry and cache_entry.etag == current_etag:
-        logger.debug(f"DB Cache hit for feed_id={feed_id} with etag={current_etag}. Updating memory cache.")
+        logger.debug(
+            f"DB Cache hit for feed_id={feed_id} with etag={current_etag}. Updating memory cache."
+        )
         _feed_memory_cache[feed_id] = (current_etag, cache_entry.content)
+        _feed_memory_cache.move_to_end(feed_id)
+        while len(_feed_memory_cache) > _FEED_MEMORY_CACHE_MAX:
+            _feed_memory_cache.popitem(last=False)
         return cache_entry.content
-        
+
     logger.debug(f"Cache miss for feed_id={feed_id}")
     return None
 
@@ -37,10 +49,13 @@ def set_cached_feed(db: Session, feed_id: str, etag: str, content: bytes | str) 
     """Insert or update (upsert) feed content and etag in the cache."""
     logger.info(f"Caching feed_id={feed_id} with etag={etag}")
     content_str = content.decode("utf-8") if isinstance(content, bytes) else content
-    
+
     # Update memory cache
     _feed_memory_cache[feed_id] = (etag, content_str)
-    
+    _feed_memory_cache.move_to_end(feed_id)
+    while len(_feed_memory_cache) > _FEED_MEMORY_CACHE_MAX:
+        _feed_memory_cache.popitem(last=False)
+
     # Update DB cache
     cache_entry = db.query(FeedCache).filter(FeedCache.feed_id == feed_id).first()
     if cache_entry:

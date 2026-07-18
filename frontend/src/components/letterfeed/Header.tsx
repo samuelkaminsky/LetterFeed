@@ -1,9 +1,10 @@
 "use client"
 
+import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import { processEmails } from "@/lib/api"
 import { useAuth } from "@/hooks/useAuth"
-import { LogOut, Mail, Plus, Settings } from "lucide-react"
+import { LogOut, Mail, Plus, Settings, Loader2 } from "lucide-react"
 import Image from "next/image"
 import { toast } from "sonner"
 
@@ -14,10 +15,13 @@ interface HeaderProps {
 
 export function Header({ onOpenAddNewsletter, onOpenSettings }: HeaderProps) {
   const { logout, isAuthEnabled } = useAuth()
+  const [isProcessing, setIsProcessing] = useState(false)
+
   const handleProcessEmails = async () => {
+    setIsProcessing(true)
     try {
       await processEmails()
-      toast.success("Email processing started successfully!")
+      toast.success("Email processing finished successfully!")
     } catch (error) {
       const message =
         error instanceof Error
@@ -25,6 +29,8 @@ export function Header({ onOpenAddNewsletter, onOpenSettings }: HeaderProps) {
           : "An unexpected error occurred."
       console.error(error)
       toast.error(message)
+    } finally {
+      setIsProcessing(false)
     }
   }
 
@@ -47,17 +53,21 @@ export function Header({ onOpenAddNewsletter, onOpenSettings }: HeaderProps) {
       </div>
 
       <div className="flex flex-wrap gap-2">
-        <Button onClick={onOpenAddNewsletter}>
+        <Button onClick={onOpenAddNewsletter} disabled={isProcessing}>
           <Plus className="w-4 h-4 mr-2" />
           Add Newsletter
         </Button>
 
-        <Button variant="outline" onClick={handleProcessEmails}>
-          <Mail className="w-4 h-4 mr-2" />
-          Process Now
+        <Button variant="outline" onClick={handleProcessEmails} disabled={isProcessing}>
+          {isProcessing ? (
+            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+          ) : (
+            <Mail className="w-4 h-4 mr-2" />
+          )}
+          {isProcessing ? "Processing..." : "Process Now"}
         </Button>
 
-        <Button variant="outline" onClick={onOpenSettings}>
+        <Button variant="outline" onClick={onOpenSettings} disabled={isProcessing}>
           <Settings className="w-4 h-4 mr-2" />
           Settings
         </Button>

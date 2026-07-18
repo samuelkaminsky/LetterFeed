@@ -41,8 +41,11 @@ def get_newsletter_by_slug(db: Session, slug: str):
 # metadata changes, so this lets the conditional-request (304) hot path resolve
 # a slug/id without touching the DB. Cleared on any newsletter create/update/
 # delete (same points that bump the metadata version). Process-local; assumes a
-# single worker, like the other in-memory caches.
-_identity_cache: dict[str, tuple[str, str | None]] = {}
+# single worker, like the other in-memory caches. Bounded (LRU eviction): a
+# positive entry is only ever a real id/slug, so the key space is already small,
+# but the cap keeps it hard-bounded as defense in depth.
+_IDENTITY_CACHE_MAX = 1024
+_identity_cache: OrderedDict[str, tuple[str, str | None]] = OrderedDict()
 
 # Bounded negative cache of identifiers known not to exist, so a flood of bad
 # feed requests doesn't hit the DB on every call. Bounded (LRU eviction) so a
@@ -57,7 +60,9 @@ _missing_identity_cache: OrderedDict[str, None] = OrderedDict()
 _identity_cache_lock = threading.Lock()
 
 
-def get_newsletter_identity(db: Session, identifier: str) -> tuple[str, str | None] | None:
+def get_newsletter_identity(
+    db: Session, identifier: str
+) -> tuple[str, str | None] | None:
     """Resolve a newsletter's (id, slug) by id or slug, cached in memory.
 
     Lightweight alternative to get_newsletter_by_identifier for the feed hot
@@ -66,6 +71,7 @@ def get_newsletter_identity(db: Session, identifier: str) -> tuple[str, str | No
     """
     with _identity_cache_lock:
         if identifier in _identity_cache:
+            _identity_cache.move_to_end(identifier)
             return _identity_cache[identifier]
         if identifier in _missing_identity_cache:
             _missing_identity_cache.move_to_end(identifier)
@@ -88,6 +94,9 @@ def get_newsletter_identity(db: Session, identifier: str) -> tuple[str, str | No
 
         identity = (row.id, row.slug)
         _identity_cache[identifier] = identity
+        _identity_cache.move_to_end(identifier)
+        while len(_identity_cache) > _IDENTITY_CACHE_MAX:
+            _identity_cache.popitem(last=False)  # evict least-recent
         return identity
 
 
@@ -127,30 +136,37 @@ def create_newsletter(db: Session, newsletter: NewsletterCreate):
     if newsletter.slug and get_newsletter_by_slug(db, newsletter.slug):
         return None  # Indicates a conflict
 
-    db_newsletter = Newsletter(
-        id=generate(size=10),
-        name=newsletter.name,
-        slug=newsletter.slug,
-        search_folder=newsletter.search_folder,
-        extract_content=newsletter.extract_content,
-        move_to_folder=newsletter.move_to_folder,
-    )
-    db.add(db_newsletter)
-    db.commit()
-    db.refresh(db_newsletter)
+    try:
+        db_newsletter = Newsletter(
+            id=generate(size=10),
+            name=newsletter.name,
+            slug=newsletter.slug,
+            search_folder=newsletter.search_folder,
+            extract_content=newsletter.extract_content,
+            move_to_folder=newsletter.move_to_folder,
+        )
+        db.add(db_newsletter)
+        db.commit()
+        db.refresh(db_newsletter)
 
-    for email in newsletter.sender_emails:
-        db_sender = Sender(id=generate(), email=email, newsletter_id=db_newsletter.id)
-        db.add(db_sender)
+        for email in newsletter.sender_emails:
+            db_sender = Sender(
+                id=generate(), email=email, newsletter_id=db_newsletter.id
+            )
+            db.add(db_sender)
 
-    db.commit()
-    db.refresh(db_newsletter)
+        db.commit()
+        db.refresh(db_newsletter)
 
-    logger.info(f"Successfully created newsletter with id={db_newsletter.id}")
-    bump_metadata_version()
-    clear_identity_cache()
-    db_newsletter.entries_count = 0
-    return db_newsletter
+        logger.info(f"Successfully created newsletter with id={db_newsletter.id}")
+        bump_metadata_version()
+        clear_identity_cache()
+        db_newsletter.entries_count = 0
+        return db_newsletter
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to create newsletter: {e}", exc_info=True)
+        raise
 
 
 def update_newsletter(
@@ -167,31 +183,36 @@ def update_newsletter(
         if existing_newsletter and existing_newsletter.id != newsletter_id:
             return "conflict"  # Indicates a conflict
 
-    update_data = newsletter_update.model_dump(exclude_unset=True)
-    for key, value in update_data.items():
-        if key == "sender_emails":
-            continue
-        setattr(db_newsletter, key, value)
+    try:
+        update_data = newsletter_update.model_dump(exclude_unset=True)
+        for key, value in update_data.items():
+            if key == "sender_emails":
+                continue
+            setattr(db_newsletter, key, value)
 
-    # More efficient sender update
-    existing_emails = {sender.email for sender in db_newsletter.senders}
-    new_emails = set(newsletter_update.sender_emails)
+        # More efficient sender update
+        existing_emails = {sender.email for sender in db_newsletter.senders}
+        new_emails = set(newsletter_update.sender_emails)
 
-    # Remove senders that are no longer in the list
-    for sender in db_newsletter.senders:
-        if sender.email not in new_emails:
-            db.delete(sender)
+        # Remove senders that are no longer in the list
+        for sender in db_newsletter.senders:
+            if sender.email not in new_emails:
+                db.delete(sender)
 
-    # Add new senders
-    for email in new_emails:
-        if email not in existing_emails:
-            db_sender = Sender(
-                id=generate(), email=email, newsletter_id=db_newsletter.id
-            )
-            db.add(db_sender)
+        # Add new senders
+        for email in new_emails:
+            if email not in existing_emails:
+                db_sender = Sender(
+                    id=generate(), email=email, newsletter_id=db_newsletter.id
+                )
+                db.add(db_sender)
 
-    db.commit()
-    db.refresh(db_newsletter)
+        db.commit()
+        db.refresh(db_newsletter)
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to update newsletter: {e}", exc_info=True)
+        raise
 
     logger.info(f"Successfully updated newsletter with id={db_newsletter.id}")
     bump_metadata_version()
@@ -206,8 +227,13 @@ def delete_newsletter(db: Session, newsletter_id: str):
     if not db_newsletter:
         return None
 
-    db.delete(db_newsletter)
-    db.commit()
+    try:
+        db.delete(db_newsletter)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to delete newsletter: {e}", exc_info=True)
+        raise
 
     # Invalidate caches: entries are gone (timestamp cache) and the newsletter
     # set changed (metadata version), which busts the master feed's ETag too.

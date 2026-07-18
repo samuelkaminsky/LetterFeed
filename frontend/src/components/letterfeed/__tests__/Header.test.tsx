@@ -118,7 +118,7 @@ describe("Header", () => {
 
     await waitFor(() => {
       expect(toast.success).toHaveBeenCalledWith(
-        "Email processing started successfully!"
+        "Email processing finished successfully!"
       )
     })
   })

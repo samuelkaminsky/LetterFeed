@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from typing import List
 from urllib.parse import urlsplit
 
@@ -28,7 +29,9 @@ def _trusted_hosts() -> set[str]:
     return hosts
 
 
-def _get_base_url(request: Request | None = None, base_url_param: str | None = None) -> str:
+def _get_base_url(
+    request: Request | None = None, base_url_param: str | None = None
+) -> str:
     """Determine the application base URL dynamically from request headers or config."""
     if request is not None:
         trusted = _trusted_hosts()
@@ -59,7 +62,11 @@ def _get_base_url(request: Request | None = None, base_url_param: str | None = N
 
 
 def _create_feed_generator(
-    feed_id: str, title: str, feed_url: str, description: str, base_url: str | None = None
+    feed_id: str,
+    title: str,
+    feed_url: str,
+    description: str,
+    base_url: str | None = None,
 ) -> FeedGenerator:
     """Initialize and configures a FeedGenerator instance."""
     url = (base_url or settings.app_base_url).rstrip("/")
@@ -91,13 +98,17 @@ def _add_entries_to_feed(
         )
         fe.content(entry.body, type="html")
 
-        if entry.received_at.tzinfo is None:
-            timezone_aware_received_at = entry.received_at.replace(tzinfo=tz.tzutc())
+        received_at = entry.received_at
+        if received_at is None:
+            received_at = datetime.now(UTC)
+
+        if received_at.tzinfo is None:
+            timezone_aware_received_at = received_at.replace(tzinfo=tz.tzutc())
             fe.published(timezone_aware_received_at)
             fe.updated(timezone_aware_received_at)
         else:
-            fe.published(entry.received_at)
-            fe.updated(entry.received_at)
+            fe.published(received_at)
+            fe.updated(received_at)
 
 
 def generate_feed(

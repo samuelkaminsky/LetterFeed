@@ -5,7 +5,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from app.core.database import SessionLocal
 from app.core.logging import get_logger
 from app.crud.settings import get_settings
-from app.services.email_processor import process_emails
+from app.services.email_processor import ProcessingInProgressError, process_emails
 
 """Scheduler for background tasks like email processing."""
 
@@ -19,6 +19,8 @@ def job():
     try:
         process_emails(db)
         logger.info("Scheduler job finished: process_emails")
+    except ProcessingInProgressError:
+        logger.info("Scheduler job skipped: process_emails is already running")
     except Exception as e:
         logger.error(f"Error in scheduled job process_emails: {e}", exc_info=True)
     finally:
@@ -67,9 +69,7 @@ def start_scheduler_with_interval():
 def reschedule_email_job(interval_minutes: int) -> None:
     """Update the running email-check job's interval after a settings change."""
     if not scheduler.running:
-        logger.info(
-            "Scheduler not running; new interval will apply on next startup."
-        )
+        logger.info("Scheduler not running; new interval will apply on next startup.")
         return
     interval_minutes = max(1, interval_minutes)
     try:

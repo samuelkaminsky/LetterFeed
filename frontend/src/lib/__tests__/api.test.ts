@@ -268,6 +268,8 @@ describe("API Functions", () => {
       expect(result).toEqual(mockResponse)
       expect(fetch).toHaveBeenCalledWith(`${API_BASE_URL}/imap/test`, {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: undefined,
         credentials: "same-origin",
       })
       expect(toast.error).not.toHaveBeenCalled()

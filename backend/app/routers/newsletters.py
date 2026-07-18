@@ -1,6 +1,7 @@
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -27,10 +28,16 @@ def create_new_newsletter(newsletter: NewsletterCreate, db: Session = Depends(ge
     logger.info(
         f"Request to create new newsletter for senders {newsletter.sender_emails}"
     )
-    db_newsletter = create_newsletter(db=db, newsletter=newsletter)
-    if db_newsletter is None:
-        raise HTTPException(status_code=409, detail="Slug already in use")
-    return db_newsletter
+    try:
+        db_newsletter = create_newsletter(db=db, newsletter=newsletter)
+        if db_newsletter is None:
+            raise HTTPException(status_code=409, detail="Slug already in use")
+        return db_newsletter
+    except IntegrityError as e:
+        logger.warning(f"Conflict error creating newsletter: {e}")
+        raise HTTPException(
+            status_code=409, detail="Slug or sender email already in use."
+        )
 
 
 @router.get("/newsletters", response_model=List[Newsletter])
@@ -58,15 +65,23 @@ def update_existing_newsletter(
 ):
     """Update an existing newsletter."""
     logger.info(f"Request to update newsletter with id={newsletter_id}")
-    db_newsletter = update_newsletter(
-        db, newsletter_id=newsletter_id, newsletter_update=newsletter
-    )
-    if db_newsletter is None:
-        logger.warning(f"Newsletter with id={newsletter_id} not found, cannot update")
-        raise HTTPException(status_code=404, detail="Newsletter not found")
-    if db_newsletter == "conflict":
-        raise HTTPException(status_code=409, detail="Slug already in use")
-    return db_newsletter
+    try:
+        db_newsletter = update_newsletter(
+            db, newsletter_id=newsletter_id, newsletter_update=newsletter
+        )
+        if db_newsletter is None:
+            logger.warning(
+                f"Newsletter with id={newsletter_id} not found, cannot update"
+            )
+            raise HTTPException(status_code=404, detail="Newsletter not found")
+        if db_newsletter == "conflict":
+            raise HTTPException(status_code=409, detail="Slug already in use")
+        return db_newsletter
+    except IntegrityError as e:
+        logger.warning(f"Conflict error updating newsletter: {e}")
+        raise HTTPException(
+            status_code=409, detail="Slug or sender email already in use."
+        )
 
 
 @router.delete("/newsletters/{newsletter_id}", response_model=Newsletter)
@@ -77,13 +92,15 @@ def delete_existing_newsletter(newsletter_id: str, db: Session = Depends(get_db)
     if db_newsletter is None:
         logger.warning(f"Newsletter with id={newsletter_id} not found, cannot delete")
         raise HTTPException(status_code=404, detail="Newsletter not found")
-    
+
     # Invalidate feed cache for this newsletter
     try:
         delete_cached_feed(db, newsletter_id)
     except Exception as e:
-        logger.error(f"Failed to delete feed cache for newsletter_id={newsletter_id}: {e}")
-        
+        logger.error(
+            f"Failed to delete feed cache for newsletter_id={newsletter_id}: {e}"
+        )
+
     return db_newsletter
 
 

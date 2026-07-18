@@ -21,6 +21,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { isValidEmail } from "@/lib/utils"
+import { toast } from "sonner"
 
 interface NewsletterDialogProps {
   newsletter?: Newsletter | null
@@ -83,16 +84,23 @@ export function NewsletterDialog({ newsletter, isOpen, folderOptions, onOpenChan
   }
 
   const handleSubmit = async () => {
-    if (!formData.name || !formData.emails.some((email) => email.trim() && isValidEmail(email))) {
+    if (!formData.name.trim()) {
+      toast.error("Please enter a newsletter name.")
+      return
+    }
+
+    const validEmails = formData.emails.filter((email) => email.trim() && isValidEmail(email))
+    if (validEmails.length === 0) {
+      toast.error("Please enter at least one valid email address.")
       return
     }
 
     const payload = {
       name: formData.name,
-      slug: formData.slug,
-      sender_emails: formData.emails.filter((email) => email.trim()),
-      search_folder: formData.search_folder,
-      move_to_folder: formData.move_to_folder,
+      slug: formData.slug || null,
+      sender_emails: validEmails,
+      search_folder: formData.search_folder || null,
+      move_to_folder: formData.move_to_folder || null,
       extract_content: formData.extract_content,
     }
 

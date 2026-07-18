@@ -29,7 +29,9 @@ def test_feed_caching_and_invalidation(client: TestClient, db_session: Session):
     assert "Test Entry 1" in response_1.text
 
     # 4. Check that cache entry exists in db
-    cache_record = db_session.query(FeedCache).filter(FeedCache.feed_id == newsletter_id).first()
+    cache_record = (
+        db_session.query(FeedCache).filter(FeedCache.feed_id == newsletter_id).first()
+    )
     assert cache_record is not None
     assert cache_record.etag is not None
     assert "Test Entry 1" in cache_record.content
@@ -42,6 +44,7 @@ def test_feed_caching_and_invalidation(client: TestClient, db_session: Session):
 
     # Clear memory cache since we bypassed the CRUD set function
     from app.crud.feed_cache import _feed_memory_cache
+
     _feed_memory_cache.clear()
 
     # 6. Fetch again: should return our modified cached content (cache hit)
@@ -90,7 +93,9 @@ def test_master_feed_caching(client: TestClient, db_session: Session):
     assert "Master Test Entry" in res_1.text
 
     # Verify cache record exists
-    cache_record = db_session.query(FeedCache).filter(FeedCache.feed_id == "master").first()
+    cache_record = (
+        db_session.query(FeedCache).filter(FeedCache.feed_id == "master").first()
+    )
     assert cache_record is not None
 
     # Mutate the cache record
@@ -100,6 +105,7 @@ def test_master_feed_caching(client: TestClient, db_session: Session):
 
     # Clear memory cache since we bypassed the CRUD set function
     from app.crud.feed_cache import _feed_memory_cache
+
     _feed_memory_cache.clear()
 
     # Fetch master feed again: should hit the cache and return the mutated content
@@ -136,26 +142,28 @@ def test_newsletter_feed_limit(client: TestClient, db_session: Session):
     with patch("app.routers.feeds.settings") as mock_settings:
         mock_settings.newsletter_feed_limit = 2
         mock_settings.app_base_url = "http://backend:8000"
-        
+
         # Clear the cache first to force regeneration
         db_session.query(FeedCache).filter(FeedCache.feed_id == newsletter_id).delete()
         db_session.commit()
 
         # Clear memory cache since we bypassed the CRUD delete function
         from app.crud.feed_cache import _feed_memory_cache
+
         _feed_memory_cache.clear()
 
         res_limited = client.get(f"/feeds/{newsletter_id}")
         assert res_limited.status_code == 200
-        
+
         import xml.etree.ElementTree as ET
+
         root = ET.fromstring(res_limited.text)
         ns = {"atom": "http://www.w3.org/2005/Atom"}
         entries = root.findall("atom:entry", ns)
-        
+
         # Should be limited to 2 entries
         assert len(entries) == 2
-        
+
         entry_titles = [entry.find("atom:title", ns).text for entry in entries]
         # Should be the latest 2 entries (Entry 3 and Entry 2)
         assert "Entry 3" in entry_titles
@@ -163,7 +171,9 @@ def test_newsletter_feed_limit(client: TestClient, db_session: Session):
         assert "Entry 1" not in entry_titles
 
 
-def test_feed_refreshes_when_newsletter_renamed(client: TestClient, db_session: Session):
+def test_feed_refreshes_when_newsletter_renamed(
+    client: TestClient, db_session: Session
+):
     """Renaming a newsletter must change the ETag and regenerate the feed.
 
     A rename does not advance the latest-entry timestamp, so without folding the
@@ -194,13 +204,15 @@ def test_feed_refreshes_when_newsletter_renamed(client: TestClient, db_session: 
     # Rename the newsletter (senders unchanged).
     client.put(
         f"/newsletters/{newsletter_id}",
-        json={"name": "New Name", "sender_emails": [unique_email], "extract_content": False},
+        json={
+            "name": "New Name",
+            "sender_emails": [unique_email],
+            "extract_content": False,
+        },
     )
 
     # A conditional request with the old ETag must NOT get a 304.
-    res_stale = client.get(
-        f"/feeds/{newsletter_id}", headers={"If-None-Match": etag_1}
-    )
+    res_stale = client.get(f"/feeds/{newsletter_id}", headers={"If-None-Match": etag_1})
     assert res_stale.status_code == 200
     assert res_stale.headers.get("ETag") != etag_1
     assert "New Name" in res_stale.text
@@ -243,7 +255,9 @@ def test_master_feed_refreshes_when_newsletter_deleted(
     assert "Drop Entry" not in res_2.text
 
 
-def test_feed_cache_deleted_on_newsletter_delete(client: TestClient, db_session: Session):
+def test_feed_cache_deleted_on_newsletter_delete(
+    client: TestClient, db_session: Session
+):
     """Test that deleting a newsletter cleans up its corresponding cache entry."""
     unique_email = f"del_test_{uuid.uuid4()}@example.com"
     newsletter_data = {"name": "Delete Test NL", "sender_emails": [unique_email]}
@@ -262,11 +276,17 @@ def test_feed_cache_deleted_on_newsletter_delete(client: TestClient, db_session:
     assert res.status_code == 200
 
     # Cache record exists
-    assert db_session.query(FeedCache).filter(FeedCache.feed_id == newsletter_id).count() == 1
+    assert (
+        db_session.query(FeedCache).filter(FeedCache.feed_id == newsletter_id).count()
+        == 1
+    )
 
     # Delete newsletter
     del_res = client.delete(f"/newsletters/{newsletter_id}")
     assert del_res.status_code == 200
 
     # Cache record is gone
-    assert db_session.query(FeedCache).filter(FeedCache.feed_id == newsletter_id).count() == 0
+    assert (
+        db_session.query(FeedCache).filter(FeedCache.feed_id == newsletter_id).count()
+        == 0
+    )

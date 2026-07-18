@@ -44,7 +44,7 @@ def test_gzip_compression(client: TestClient, db_session: Session):
     # Request master feed with Accept-Encoding: gzip
     headers = {"Accept-Encoding": "gzip"}
     response = client.get("/feeds/all", headers=headers)
-    
+
     # It should succeed and indicate gzip encoding
     assert response.status_code == 200
     assert response.headers.get("content-encoding") == "gzip"
@@ -69,10 +69,10 @@ def test_last_modified_and_if_modified_since(client: TestClient, db_session: Ses
     # 3. Request the feed to get headers
     response = client.get(f"/feeds/{newsletter_id}")
     assert response.status_code == 200
-    
+
     last_modified = response.headers.get("Last-Modified")
     etag = response.headers.get("ETag")
-    
+
     assert last_modified is not None
     assert etag is not None
 
@@ -152,16 +152,12 @@ def test_newsletter_feed_304_makes_no_db_queries(
 
     # Conditional refresh: expect 304 and no SQL at all.
     with count_queries() as statements:
-        res = client.get(
-            f"/feeds/{newsletter_id}", headers={"If-None-Match": etag}
-        )
+        res = client.get(f"/feeds/{newsletter_id}", headers={"If-None-Match": etag})
     assert res.status_code == 304
     assert statements == [], f"304 path issued DB queries: {statements}"
 
 
-def test_master_feed_304_makes_no_db_queries(
-    client: TestClient, db_session: Session
-):
+def test_master_feed_304_makes_no_db_queries(client: TestClient, db_session: Session):
     """A warm conditional refresh of the master feed must hit zero DB queries."""
     unique_email = f"q304master_{uuid.uuid4()}@example.com"
     newsletter_id = client.post(
@@ -249,8 +245,6 @@ def test_secured_master_feed_304_makes_no_db_queries(
     etag = warm.headers["ETag"]
 
     with count_queries() as statements:
-        res = client.get(
-            f"/feeds/all?token={token}", headers={"If-None-Match": etag}
-        )
+        res = client.get(f"/feeds/all?token={token}", headers={"If-None-Match": etag})
     assert res.status_code == 304
     assert statements == [], f"secured 304 path issued DB queries: {statements}"

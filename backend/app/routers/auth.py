@@ -28,7 +28,8 @@ def auth_status(auth_enabled: bool = Depends(is_auth_enabled)):
 @router.post("/auth/login", response_model=Token)
 def login_for_access_token(
     response: Response,
-    form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: Session = Depends(get_db),
 ):
     """Verify username and password and return an access token."""
     auth_creds = _get_auth_credentials(db)
@@ -71,6 +72,7 @@ def login_for_access_token(
         expires=max_age_seconds,
         samesite="lax",
         secure=settings.production,
+        path="/",
     )
 
     return {"access_token": access_token, "token_type": "bearer"}

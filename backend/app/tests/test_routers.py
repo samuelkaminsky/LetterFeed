@@ -52,9 +52,7 @@ def test_update_imap_settings_rejects_nonpositive_interval(client: TestClient):
         assert response.status_code == 422, f"interval={bad} should be rejected"
 
     # A positive interval is still accepted.
-    response = client.post(
-        "/imap/settings", json={**base, "email_check_interval": 30}
-    )
+    response = client.post("/imap/settings", json={**base, "email_check_interval": 30})
     assert response.status_code == 200
     assert response.json()["email_check_interval"] == 30
 

@@ -63,8 +63,8 @@ describe("NewsletterDialog", () => {
           name: "My New Newsletter",
           slug: "my-new-newsletter",
           sender_emails: ["test@example.com"],
-          search_folder: "",
-          move_to_folder: "",
+          search_folder: null,
+          move_to_folder: null,
           extract_content: false,
         })
         expect(handleSuccess).toHaveBeenCalledTimes(1)
@@ -111,8 +111,8 @@ describe("NewsletterDialog", () => {
           name: "Updated Name",
           slug: "existing-newsletter",
           sender_emails: ["current@example.com"],
-          search_folder: "",
-          move_to_folder: "",
+          search_folder: null,
+          move_to_folder: null,
           extract_content: false,
         })
         expect(handleSuccess).toHaveBeenCalledTimes(1)

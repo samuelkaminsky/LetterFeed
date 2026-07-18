@@ -86,8 +86,11 @@ export function SettingsDialog({
     if (!currentSettings) return
     setTestConnectionStatus("loading")
     try {
-      await updateSettings(currentSettings)
-      const result = await testImapConnection()
+      const payload = { ...currentSettings }
+      if (payload.imap_password === "") {
+        delete payload.imap_password
+      }
+      const result = await testImapConnection(payload)
       setTestConnectionStatus("success")
       setTestConnectionMessage(result.message)
     } catch (error: unknown) {

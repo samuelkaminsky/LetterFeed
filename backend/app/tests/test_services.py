@@ -125,12 +125,12 @@ def test_generate_feed_with_proxy_request(db_session: Session):
         name="Proxy Test", sender_emails=["proxy@example.com"]
     )
     newsletter = create_newsletter(db_session, newsletter_data)
-    
+
     # Create a mock Request
     mock_request = MagicMock(spec=Request)
     mock_request.headers = {
         "x-forwarded-host": "letterfeed.example.com",
-        "x-forwarded-proto": "https"
+        "x-forwarded-proto": "https",
     }
 
     # The forwarded host is only reflected when it is a configured/trusted host.
@@ -148,13 +148,18 @@ def test_generate_feed_with_proxy_request(db_session: Session):
     # Check for the self link
     links = root.findall("atom:link", ns)
     self_link = next(link for link in links if link.get("rel") == "self")
-    assert self_link.get("href") == f"https://letterfeed.example.com/api/feeds/{newsletter.id}"
-    
+    assert (
+        self_link.get("href")
+        == f"https://letterfeed.example.com/api/feeds/{newsletter.id}"
+    )
+
     # Check alternate link, logo, and icon
     alternate_link = next(link for link in links if link.get("rel") == "alternate")
     assert alternate_link.get("href") == "https://letterfeed.example.com/"
     assert root.find("atom:logo", ns).text == "https://letterfeed.example.com/logo.png"
-    assert root.find("atom:icon", ns).text == "https://letterfeed.example.com/favicon.ico"
+    assert (
+        root.find("atom:icon", ns).text == "https://letterfeed.example.com/favicon.ico"
+    )
 
 
 def test_generate_master_feed_with_proxy_request(db_session: Session):
@@ -163,7 +168,7 @@ def test_generate_master_feed_with_proxy_request(db_session: Session):
     mock_request = MagicMock(spec=Request)
     mock_request.headers = {
         "x-forwarded-host": "letterfeed.example.com",
-        "x-forwarded-proto": "https"
+        "x-forwarded-proto": "https",
     }
 
     # The forwarded host is only reflected when it is a configured/trusted host.

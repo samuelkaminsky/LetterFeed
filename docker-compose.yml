@@ -2,8 +2,6 @@ services:
   backend:
     image: ghcr.io/samuelkaminsky/letterfeed-backend:latest
     restart: unless-stopped
-    ports:
-      - "8000:8000"
     env_file:
       - .env
     volumes:

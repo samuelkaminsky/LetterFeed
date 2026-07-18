@@ -189,9 +189,13 @@ export async function getImapFolders(): Promise<string[]> {
     return fetcher<string[]>(`${API_BASE_URL}/imap/folders`, {}, "Failed to fetch IMAP folders", true);
 }
 
-export async function testImapConnection(): Promise<{ message: string }> {
+export async function testImapConnection(settings?: SettingsCreate): Promise<{ message: string }> {
     return fetcher<{ message: string }>(`${API_BASE_URL}/imap/test`, {
         method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: settings ? JSON.stringify(settings) : undefined,
     }, "Failed to test IMAP connection");
 }
 

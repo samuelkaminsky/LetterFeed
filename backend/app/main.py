@@ -21,6 +21,10 @@ async def lifespan(app: FastAPI):
 
     logger.info(f"DATABASE_URL used: {settings.database_url}")
     logger.info("Starting up Letterfeed backend...")
+    logger.warning(
+        "Letterfeed uses process-local memory caches for performance. Running multiple uvicorn "
+        "worker processes is not supported and will result in stale/inconsistent cache state."
+    )
 
     if settings.production and not settings.secret_key:
         logger.warning(

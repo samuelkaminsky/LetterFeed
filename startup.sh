@@ -44,12 +44,21 @@ fi
 # Configure environment
 # Fetch settings from Google Secret Manager and write directly to .env
 # We assume the secret contains the necessary LETTERFEED_* variables.
+OLD_KEY=""
+if [ -f .env ]; then
+  OLD_KEY=$(grep "LETTERFEED_SECRET_KEY" .env | cut -d'=' -f2-)
+fi
+
 gcloud secrets versions access latest --secret="letterfeed-env" > .env
 
-# Generate a random 32-character secret key if not provided in the secret
+# Restore or generate the secret key if not provided in the secret
 if ! grep -q "LETTERFEED_SECRET_KEY" .env; then
-  SECRET=$(head /dev/urandom | tr -dc A-Za-z0-9 | head -c 32 ; echo '')
-  echo "LETTERFEED_SECRET_KEY=$SECRET" >> .env
+  if [ -n "$OLD_KEY" ]; then
+    echo "LETTERFEED_SECRET_KEY=$OLD_KEY" >> .env
+  else
+    SECRET=$(openssl rand -hex 32 2>/dev/null || python3 -c 'import secrets; print(secrets.token_hex(32))')
+    echo "LETTERFEED_SECRET_KEY=$SECRET" >> .env
+  fi
 fi
 
 # Ensure frontend uses the correct backend URL in Docker Compose

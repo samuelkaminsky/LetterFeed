@@ -62,10 +62,16 @@ def get_entries_by_newsletter(
     return query.all()
 
 
-def get_entry_by_message_id(db: Session, message_id: str):
-    """Retrieve an entry by its message_id."""
-    logger.debug(f"Querying for entry with message_id={message_id}")
-    return db.query(Entry).filter(Entry.message_id == message_id).first()
+def get_entry_by_message_id(db: Session, message_id: str, newsletter_id: str):
+    """Retrieve an entry by its message_id and newsletter_id."""
+    logger.debug(
+        f"Querying for entry with message_id={message_id} and newsletter_id={newsletter_id}"
+    )
+    return (
+        db.query(Entry)
+        .filter(Entry.message_id == message_id, Entry.newsletter_id == newsletter_id)
+        .first()
+    )
 
 
 # In-memory cache for the latest entry timestamps: feed_id or "master" -> datetime | None
@@ -90,7 +96,7 @@ def get_latest_entry_timestamp_cached(
     cache_key = newsletter_id or "master"
     if cache_key in _latest_timestamp_cache:
         return _latest_timestamp_cache[cache_key]
-    
+
     val = get_latest_entry_timestamp(db, newsletter_id)
     _latest_timestamp_cache[cache_key] = val
     return val
@@ -125,13 +131,50 @@ def create_entry(db: Session, entry: EntryCreate, newsletter_id: str):
     logger.info(
         f"Creating new entry for newsletter_id={newsletter_id} with subject '{entry.subject}'"
     )
-    db_entry = Entry(id=generate(), **entry.model_dump(), newsletter_id=newsletter_id)
-    db.add(db_entry)
-    db.commit()
-    db.refresh(db_entry)
-    
-    # Invalidate cache since a new entry is added
-    clear_latest_timestamp_cache()
-    
-    logger.info(f"Successfully created entry with id={db_entry.id}")
-    return db_entry
+    from app.core.sanitization import sanitize_html
+
+    entry_data = entry.model_dump()
+    entry_data["body"] = sanitize_html(entry_data.get("body", ""))
+
+    try:
+        db_entry = Entry(id=generate(), **entry_data, newsletter_id=newsletter_id)
+        db.add(db_entry)
+        db.commit()
+        db.refresh(db_entry)
+
+        # Invalidate cache since a new entry is added
+        clear_latest_timestamp_cache()
+
+        logger.info(f"Successfully created entry with id={db_entry.id}")
+        return db_entry
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to create entry: {e}", exc_info=True)
+        raise
+
+
+def purge_old_entries(db: Session) -> int:
+    """Delete entries older than the retention limit from the database.
+
+    Returns the number of deleted entries.
+    """
+    if settings.feed_retention_days is None:
+        return 0
+
+    cutoff = _retention_cutoff()
+    logger.info(f"Purging database entries older than {cutoff}")
+    try:
+        deleted_count = (
+            db.query(Entry)
+            .filter(Entry.received_at < cutoff)
+            .delete(synchronize_session=False)
+        )
+        db.commit()
+        if deleted_count > 0:
+            logger.info(f"Purged {deleted_count} old entries from the database.")
+            clear_latest_timestamp_cache()
+        return deleted_count
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to purge old entries: {e}", exc_info=True)
+        return 0

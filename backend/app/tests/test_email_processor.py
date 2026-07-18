@@ -111,7 +111,9 @@ def test_process_single_email_not_deleted_when_copy_fails(db_session: Session):
     mock_mail.copy.assert_called_once_with("1", "GlobalArchive")
     # The email must NOT be flagged for deletion when the copy did not succeed.
     delete_calls = [
-        c for c in mock_mail.store.call_args_list if c.args[1:] == ("+FLAGS", "\\Deleted")
+        c
+        for c in mock_mail.store.call_args_list
+        if c.args[1:] == ("+FLAGS", "\\Deleted")
     ]
     assert delete_calls == []
 
@@ -347,7 +349,9 @@ def test_process_single_email_with_null_bytes_in_body(db_session: Session):
                 "Failed to extract content" in call_args[0][0]
                 for call_args in mock_logger.warning.call_args_list
             )
-            assert any_warning_call, "Expected a warning log containing 'Failed to extract content'"
+            assert any_warning_call, (
+                "Expected a warning log containing 'Failed to extract content'"
+            )
 
         # Check that an entry was still created
         mock_create_entry.assert_called_once()
@@ -381,6 +385,7 @@ def test_process_single_email_already_processed_still_archived(db_session: Sessi
     # Pre-create entry in DB to simulate "already processed"
     from app.crud.entries import create_entry
     from app.schemas.entries import EntryCreate
+
     entry_schema = EntryCreate(
         subject="Test Email",
         body="Already Processed Body",
@@ -468,7 +473,12 @@ def test_process_single_email_with_auto_detected_archive_fallback(db_session: Se
 
     # 2. ACT
     _process_single_email(
-        "1", mock_mail, db_session, sender_map, settings, detected_archive="DetectedArchive"
+        "1",
+        mock_mail,
+        db_session,
+        sender_map,
+        settings,
+        detected_archive="DetectedArchive",
     )
 
     # 3. ASSERT

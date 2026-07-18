@@ -73,6 +73,20 @@ def test_protected_route_no_auth(client: TestClient, db_session: Session):
     assert response.status_code == 200
 
 
+def test_protected_route_fails_closed_in_production(
+    client: TestClient, db_session: Session
+):
+    """In production with no auth configured, protected routes fail closed (503)."""
+    with patch("app.core.auth.env_settings") as mock_env:
+        # No auth configured via env, and no settings row exists in the DB.
+        mock_env.auth_username = None
+        mock_env.auth_password = None
+        mock_env.production = True
+
+        response = client.get("/newsletters")
+        assert response.status_code == 503
+
+
 def test_protected_route_with_auth_fail(client: TestClient, db_session: Session):
     """Test accessing a protected route with auth enabled but wrong credentials."""
     settings_data = SettingsCreate(
@@ -254,4 +268,3 @@ def test_verify_auth_endpoint(client: TestClient, db_session: Session):
     assert response.status_code == 200
     assert response.json()["authenticated"] is True
     assert response.json()["username"] == "admin"
-
