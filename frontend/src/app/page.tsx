@@ -18,6 +18,15 @@ import { MasterFeedCard } from "@/components/letterfeed/MasterFeedCard"
 import { NewsletterDialog } from "@/components/letterfeed/NewsletterDialog"
 import { SettingsDialog } from "@/components/letterfeed/SettingsDialog"
 
+async function loadDashboardData() {
+  const [newsletters, settings, folderOptions] = await Promise.all([
+    getNewsletters(),
+    getSettings(),
+    getImapFolders(),
+  ])
+  return { newsletters, settings, folderOptions }
+}
+
 function LetterFeedApp() {
   const [newsletters, setNewsletters] = useState<Newsletter[]>([])
   const [isLoading, setIsLoading] = useState(true)
@@ -28,22 +37,19 @@ function LetterFeedApp() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
   const [editingNewsletter, setEditingNewsletter] = useState<Newsletter | null>(null)
 
-  const fetchData = async () => {
-    try {
-      const [newslettersData, settingsData, foldersData] = await Promise.all([
-        getNewsletters(),
-        getSettings(),
-        getImapFolders(),
-      ])
-      setNewsletters(newslettersData)
-      setSettings(settingsData)
-      setFolderOptions(foldersData)
-    } catch (error) {
-      console.error("Failed to fetch data:", error)
-    } finally {
-      setIsLoading(false)
-    }
-  }
+  const fetchData = () =>
+    loadDashboardData()
+      .then((data) => {
+        setNewsletters(data.newsletters)
+        setSettings(data.settings)
+        setFolderOptions(data.folderOptions)
+      })
+      .catch((error) => {
+        console.error("Failed to fetch data:", error)
+      })
+      .finally(() => {
+        setIsLoading(false)
+      })
 
   useEffect(() => {
     fetchData()
