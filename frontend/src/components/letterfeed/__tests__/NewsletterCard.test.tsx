@@ -15,6 +15,7 @@ const mockNewsletter: Newsletter = {
   name: "Tech Weekly",
   slug: "tech-weekly",
   is_active: true,
+  extract_content: false,
   senders: [
     { id: "1", email: "contact@techweekly.com" },
     { id: "2", email: "updates@techweekly.com" },

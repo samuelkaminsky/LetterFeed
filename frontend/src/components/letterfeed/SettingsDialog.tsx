@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react"
+import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -27,6 +27,11 @@ import {
 } from "@/lib/api"
 import { toast } from "sonner"
 
+const toFormState = (settings: AppSettings): SettingsCreate => ({
+  ...settings,
+  imap_password: "",
+})
+
 interface SettingsDialogProps {
   settings: AppSettings
   folderOptions: string[]
@@ -42,31 +47,30 @@ export function SettingsDialog({
   onOpenChange,
   onSuccess,
 }: SettingsDialogProps) {
-  const [currentSettings, setCurrentSettings] = useState<SettingsCreate | null>(
-    null
+  const [currentSettings, setCurrentSettings] = useState<SettingsCreate>(() =>
+    toFormState(settings)
   )
   const [testConnectionStatus, setTestConnectionStatus] = useState<
     "idle" | "loading" | "success" | "error"
   >("idle")
   const [testConnectionMessage, setTestConnectionMessage] = useState("")
 
-  useEffect(() => {
-    if (settings) {
-      setCurrentSettings({ ...settings, imap_password: "" })
-    }
-  }, [settings])
-
-  if (!currentSettings) return null
+  // Re-seed the form when the parent passes fresh settings (e.g. after a
+  // save + refetch). Done during render instead of in an effect.
+  const [prevSettings, setPrevSettings] = useState(settings)
+  if (settings !== prevSettings) {
+    setPrevSettings(settings)
+    setCurrentSettings(toFormState(settings))
+  }
 
   const handleSettingsChange = <K extends keyof SettingsCreate>(
     key: K,
     value: SettingsCreate[K]
   ) => {
-    setCurrentSettings((prev) => (prev ? { ...prev, [key]: value } : null))
+    setCurrentSettings((prev) => ({ ...prev, [key]: value }))
   }
 
   const handleSave = async () => {
-    if (!currentSettings) return
     try {
       const payload: SettingsCreate = { ...currentSettings }
       if (payload.imap_password === "") {
@@ -83,7 +87,6 @@ export function SettingsDialog({
   }
 
   const handleTestConnection = async () => {
-    if (!currentSettings) return
     setTestConnectionStatus("loading")
     try {
       const payload = { ...currentSettings }
