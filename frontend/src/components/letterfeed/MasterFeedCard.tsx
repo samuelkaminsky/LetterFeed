@@ -1,11 +1,12 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Rss, ExternalLink, Copy, Check } from "lucide-react"
 import { getMasterFeedUrl } from "@/lib/api"
 import { toast } from "sonner"
+import { toAbsoluteUrl, useOrigin } from "@/hooks/useOrigin"
 
 interface MasterFeedCardProps {
   masterFeedToken?: string | null
@@ -13,18 +14,8 @@ interface MasterFeedCardProps {
 
 export function MasterFeedCard({ masterFeedToken }: MasterFeedCardProps) {
   const feedUrl = getMasterFeedUrl(masterFeedToken)
-  const [absoluteUrl, setAbsoluteUrl] = useState(feedUrl)
+  const absoluteUrl = toAbsoluteUrl(feedUrl, useOrigin())
   const [copied, setCopied] = useState(false)
-
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      if (feedUrl.startsWith("http://") || feedUrl.startsWith("https://")) {
-        setAbsoluteUrl(feedUrl)
-      } else {
-        setAbsoluteUrl(`${window.location.origin}${feedUrl}`)
-      }
-    }
-  }, [feedUrl])
 
   const handleCopy = async () => {
     try {

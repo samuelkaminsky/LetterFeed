@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react"
+import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import {
   Dialog,
@@ -56,11 +56,16 @@ export function NewsletterDialog({ newsletter, isOpen, folderOptions, onOpenChan
   const isEditMode = !!newsletter
   const [formData, setFormData] = useState(getInitialState(newsletter))
 
-  useEffect(() => {
+  // Reset the form whenever the dialog opens or the edited newsletter changes.
+  // Done during render (React's "adjusting state on prop change" pattern)
+  // rather than in an effect, which would render a stale frame first.
+  const [prevProps, setPrevProps] = useState({ isOpen, newsletter })
+  if (prevProps.isOpen !== isOpen || prevProps.newsletter !== newsletter) {
+    setPrevProps({ isOpen, newsletter })
     if (isOpen) {
       setFormData(getInitialState(newsletter))
     }
-  }, [isOpen, newsletter])
+  }
 
   const handleEmailChange = (index: number, value: string) => {
     setFormData((prev) => ({
