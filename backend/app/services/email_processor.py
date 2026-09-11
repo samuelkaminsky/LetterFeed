@@ -14,6 +14,7 @@ from readability import Document
 from sqlalchemy.orm import Session
 
 from app.core.config import settings as env_settings
+from app.core.imap import send_client_id
 from app.core.logging import get_logger
 from app.core.sanitization import ALLOWED_ATTRIBUTES, ALLOWED_TAGS, sanitize_html
 from app.crud.entries import create_entry, get_entry_by_message_id
@@ -48,6 +49,7 @@ def _connect_to_imap(
         logger.info(f"Connecting to IMAP server: {settings.imap_server}")
         mail = imaplib.IMAP4_SSL(settings.imap_server, timeout=30)
         mail.login(settings.imap_username, settings.imap_password)
+        send_client_id(mail)
         status, messages = mail.select(search_folder)
         if status != "OK":
             logger.error(
