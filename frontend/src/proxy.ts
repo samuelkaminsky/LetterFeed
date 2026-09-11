@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-export function middleware(request: NextRequest) {
+export function proxy(request: NextRequest) {
   const backendUrl = process.env.LETTERFEED_BACKEND_URL || 'http://backend:8000';
 
   if (request.nextUrl.pathname.startsWith('/api/')) {

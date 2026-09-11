@@ -13,16 +13,20 @@ jest.mock("../NewsletterCard", () => ({
 
 const mockNewsletters: Newsletter[] = [
   {
-    id: 1,
+    id: "1",
     name: "Newsletter One",
+    slug: null,
     is_active: true,
+    extract_content: false,
     senders: [],
     entries_count: 10,
   },
   {
-    id: 2,
+    id: "2",
     name: "Newsletter Two",
+    slug: null,
     is_active: true,
+    extract_content: false,
     senders: [],
     entries_count: 5,
   },
