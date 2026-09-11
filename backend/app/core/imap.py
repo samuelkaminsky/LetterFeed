@@ -20,12 +20,24 @@ def _parse_folder_name(folder_str: str) -> str | None:
     return None
 
 
+def send_client_id(mail: imaplib.IMAP4_SSL) -> None:
+    """Send IMAP client identity for providers that require RFC 2971 ID."""
+    imaplib.Commands.setdefault("ID", ("AUTH", "SELECTED"))
+    try:
+        mail._simple_command(
+            "ID", '("name" "LetterFeed" "version" "0.4.0" "vendor" "LetterFeed")'
+        )
+    except Exception as e:
+        logger.warning(f"Failed to send IMAP ID command: {e}")
+
+
 def _test_imap_connection(server, username, password):
     """Test the IMAP connection with the given credentials."""
     logger.info(f"Testing IMAP connection to {server} for user {username}")
     try:
         mail = imaplib.IMAP4_SSL(server, timeout=15)
         mail.login(username, password)
+        send_client_id(mail)
         mail.logout()
         logger.info("IMAP connection successful")
         return True, "Connection successful"
@@ -40,6 +52,7 @@ def get_folders(server, username, password):
     try:
         mail = imaplib.IMAP4_SSL(server, timeout=15)
         mail.login(username, password)
+        send_client_id(mail)
         status, folders = mail.list()
         mail.logout()
         if status == "OK":
