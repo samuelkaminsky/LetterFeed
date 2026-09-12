@@ -173,6 +173,10 @@ def purge_old_entries(db: Session) -> int:
         if deleted_count > 0:
             logger.info(f"Purged {deleted_count} old entries from the database.")
             clear_latest_timestamp_cache()
+            # Purging never advances the latest-entry timestamp, so the ETag
+            # must be invalidated explicitly or cached feeds keep serving the
+            # aged-out entries.
+            bump_metadata_version()
         return deleted_count
     except Exception as e:
         db.rollback()

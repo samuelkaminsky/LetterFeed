@@ -1,4 +1,3 @@
-import hashlib
 import secrets
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -12,28 +11,14 @@ from app.core.auth import is_auth_enabled
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.logging import get_logger
-from app.crud.entries import get_latest_entry_timestamp_cached, get_metadata_version
-from app.crud.feed_cache import get_cached_feed, set_cached_feed
+from app.crud.entries import get_latest_entry_timestamp_cached
+from app.crud.feed_cache import compute_feed_etag, get_cached_feed, set_cached_feed
 from app.crud.newsletters import get_newsletter_identity
 from app.crud.settings import get_master_feed_token
 from app.services.feed_generator import generate_feed, generate_master_feed
 
 logger = get_logger(__name__)
 router = APIRouter()
-
-
-def _generate_etag(identifier: str, timestamp: datetime | None) -> str:
-    """Generate an ETag from the feed identity, latest entry timestamp, and metadata.
-
-    The newsletter-metadata version is folded in so renames/sender edits/deletes
-    (which don't advance the latest timestamp) still change the ETag.
-    """
-    # isoformat is timezone-independent; .timestamp() on a naive datetime would
-    # assume the server's local timezone and change the ETag across environments.
-    ts_str = timestamp.isoformat() if timestamp else "empty"
-    parts = [identifier, ts_str, get_metadata_version()]
-    etag_raw = "-".join(parts)
-    return f'"{hashlib.md5(etag_raw.encode()).hexdigest()}"'
 
 
 def _to_utc(dt: datetime) -> datetime:
@@ -89,7 +74,7 @@ def _conditional_feed_response(
     is_head: bool = False,
 ) -> Response:
     """Serve a feed with ETag/If-Modified-Since handling and DB/memory caching."""
-    etag = _generate_etag(cache_key, latest_timestamp)
+    etag = compute_feed_etag(cache_key, latest_timestamp)
     headers = _feed_headers(etag, latest_timestamp)
 
     if _not_modified(latest_timestamp, etag, if_none_match, if_modified_since):
@@ -105,14 +90,10 @@ def _conditional_feed_response(
 
     if is_head:
         content_bytes = (
-            cached_feed.encode("utf-8")
-            if isinstance(cached_feed, str)
-            else cached_feed
+            cached_feed.encode("utf-8") if isinstance(cached_feed, str) else cached_feed
         )
         headers["Content-Length"] = str(len(content_bytes))
-        return Response(
-            content=b"", media_type="application/atom+xml", headers=headers
-        )
+        return Response(content=b"", media_type="application/atom+xml", headers=headers)
 
     return Response(
         content=cached_feed, media_type="application/atom+xml", headers=headers

@@ -17,13 +17,19 @@ from app.core.config import settings as env_settings
 from app.core.imap import send_client_id
 from app.core.logging import get_logger
 from app.core.sanitization import ALLOWED_ATTRIBUTES, ALLOWED_TAGS, sanitize_html
-from app.crud.entries import create_entry, get_entry_by_message_id
+from app.crud.entries import (
+    create_entry,
+    get_entry_by_message_id,
+    get_latest_entry_timestamp_cached,
+)
+from app.crud.feed_cache import compute_feed_etag, set_cached_feed
 from app.crud.newsletters import create_newsletter, get_newsletters
 from app.crud.settings import get_settings
 from app.models.newsletters import Newsletter
 from app.schemas.entries import EntryCreate
 from app.schemas.newsletters import NewsletterCreate
 from app.schemas.settings import Settings
+from app.services.feed_generator import generate_feed, generate_master_feed
 
 logger = get_logger(__name__)
 
@@ -420,6 +426,36 @@ def _process_single_email(
         logger.error(f"Failed to process single email id={num}: {e}", exc_info=True)
 
 
+def _prewarm_feed_caches(db: Session) -> None:
+    """Regenerate and cache every feed so the next reader poll is a cache hit.
+
+    Without a request there is no trusted Host header, so feed links fall back
+    to APP_BASE_URL. If that is still the internal docker default the links
+    would be unreachable for subscribers, so skip rather than poison the cache.
+    """
+    if "backend:8000" in env_settings.app_base_url:
+        logger.debug("APP_BASE_URL not configured; skipping feed cache pre-warm")
+        return
+
+    try:
+        master_ts = get_latest_entry_timestamp_cached(db)
+        master_content = generate_master_feed(db)
+        if master_content:
+            set_cached_feed(
+                db, "master", compute_feed_etag("master", master_ts), master_content
+            )
+
+        for nl in get_newsletters(db):
+            nl_ts = get_latest_entry_timestamp_cached(db, newsletter_id=nl.id)
+            nl_content = generate_feed(
+                db, nl.id, limit=env_settings.newsletter_feed_limit
+            )
+            if nl_content:
+                set_cached_feed(db, nl.id, compute_feed_etag(nl.id, nl_ts), nl_content)
+    except Exception as e:
+        logger.warning(f"Failed to pre-warm feed cache after email processing: {e}")
+
+
 def process_emails(db: Session) -> None:
     """Process unread emails, add them as entries, and manage newsletters."""
     if not _processing_lock.acquire(blocking=False):
@@ -516,29 +552,7 @@ def process_emails(db: Session) -> None:
 
             purge_old_entries(db)
 
-        # Pre-warm feed caches for instant RSS reader responses
-        try:
-            from app.crud.entries import get_latest_entry_timestamp_cached
-            from app.crud.feed_cache import set_cached_feed
-            from app.routers.feeds import _generate_etag
-            from app.services.feed_generator import generate_feed, generate_master_feed
-
-            master_ts = get_latest_entry_timestamp_cached(db)
-            master_etag = _generate_etag("master", master_ts)
-            master_content = generate_master_feed(db)
-            if master_content:
-                set_cached_feed(db, "master", master_etag, master_content)
-
-            for nl in get_newsletters(db):
-                nl_ts = get_latest_entry_timestamp_cached(db, newsletter_id=nl.id)
-                nl_etag = _generate_etag(nl.id, nl_ts)
-                nl_content = generate_feed(
-                    db, nl.id, limit=env_settings.newsletter_feed_limit
-                )
-                if nl_content:
-                    set_cached_feed(db, nl.id, nl_etag, nl_content)
-        except Exception as e:
-            logger.warning(f"Failed to pre-warm feed cache after email processing: {e}")
+        _prewarm_feed_caches(db)
 
         logger.info("Email processing finished successfully.")
     finally:

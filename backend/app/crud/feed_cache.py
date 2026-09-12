@@ -1,12 +1,30 @@
+import hashlib
 from collections import OrderedDict
 from datetime import datetime
 
 from sqlalchemy.orm import Session
 
 from app.core.logging import get_logger
+from app.crud.entries import get_metadata_version
 from app.models.feed_cache import FeedCache
 
 logger = get_logger(__name__)
+
+
+def compute_feed_etag(identifier: str, timestamp: datetime | None) -> str:
+    """Generate an ETag from the feed identity, latest entry timestamp, and metadata.
+
+    The newsletter-metadata version is folded in so renames/sender edits/deletes
+    and retention purges (which don't advance the latest timestamp) still change
+    the ETag.
+    """
+    # isoformat is timezone-independent; .timestamp() on a naive datetime would
+    # assume the server's local timezone and change the ETag across environments.
+    ts_str = timestamp.isoformat() if timestamp else "empty"
+    parts = [identifier, ts_str, get_metadata_version()]
+    etag_raw = "-".join(parts)
+    return f'"{hashlib.md5(etag_raw.encode()).hexdigest()}"'
+
 
 # Bounded in-memory cache for feeds: feed_id -> (etag, content_str)
 _FEED_MEMORY_CACHE_MAX = 64

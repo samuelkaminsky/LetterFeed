@@ -270,9 +270,7 @@ def test_304_response_headers(client: TestClient, db_session: Session):
     etag = resp_200.headers.get("ETag")
     assert etag is not None
 
-    resp_304 = client.get(
-        f"/feeds/{newsletter_id}", headers={"If-None-Match": etag}
-    )
+    resp_304 = client.get(f"/feeds/{newsletter_id}", headers={"If-None-Match": etag})
     assert resp_304.status_code == 304
     assert resp_304.headers.get("ETag") == etag
     assert "public" in resp_304.headers.get("Cache-Control", "")
@@ -332,3 +330,102 @@ def test_xml_minification(client: TestClient, db_session: Session):
     # Pretty-printed XML includes leading spaces for indentation (e.g. "  <title>")
     assert "\n  <title>" not in resp.text
 
+
+# Settings is a frozen pydantic model, so tests override fields via __dict__.
+def _make_newsletter_with_entry(client: TestClient, name: str) -> str:
+    newsletter_id = client.post(
+        "/newsletters",
+        json={"name": name, "sender_emails": [f"{uuid.uuid4()}@example.com"]},
+    ).json()["id"]
+    client.post(
+        f"/newsletters/{newsletter_id}/entries",
+        json={
+            "subject": "Entry",
+            "body": "<p>Body</p>",
+            "message_id": f"<entry_{uuid.uuid4()}@test.com>",
+        },
+    )
+    return newsletter_id
+
+
+def test_prewarm_skipped_when_base_url_is_docker_default(
+    client: TestClient, db_session: Session, monkeypatch
+):
+    """Pre-warm must not bake the unreachable backend:8000 host into cached feeds."""
+    from app.core.config import settings
+    from app.services.email_processor import _prewarm_feed_caches
+
+    newsletter_id = _make_newsletter_with_entry(client, "Prewarm Skip NL")
+    _feed_memory_cache.clear()
+    monkeypatch.setitem(settings.__dict__, "app_base_url", "http://backend:8000")
+
+    _prewarm_feed_caches(db_session)
+
+    assert "master" not in _feed_memory_cache
+    assert newsletter_id not in _feed_memory_cache
+
+
+def test_prewarm_populates_cache_with_configured_base_url(
+    client: TestClient, db_session: Session, monkeypatch
+):
+    """After pre-warm, a reader's first GET is served from cache with public links."""
+    from app.core.config import settings
+    from app.services.email_processor import _prewarm_feed_caches
+
+    newsletter_id = _make_newsletter_with_entry(client, "Prewarm NL")
+    _feed_memory_cache.clear()
+    monkeypatch.setitem(settings.__dict__, "app_base_url", "https://feeds.example.com")
+
+    _prewarm_feed_caches(db_session)
+
+    assert "master" in _feed_memory_cache
+    assert newsletter_id in _feed_memory_cache
+    assert "https://feeds.example.com/api/feeds/all" in _feed_memory_cache["master"][1]
+    assert "backend:8000" not in _feed_memory_cache[newsletter_id][1]
+
+    # The pre-warmed etag must match what the GET path computes, or it's useless.
+    with count_queries() as statements:
+        res = client.get(f"/feeds/{newsletter_id}")
+    assert res.status_code == 200
+    assert not any("feed_cache" in s.lower() for s in statements), (
+        f"GET after pre-warm hit the DB feed cache instead of memory: {statements}"
+    )
+
+
+def test_purge_old_entries_invalidates_etag(
+    client: TestClient, db_session: Session, monkeypatch
+):
+    """Entries aging out never advance the latest timestamp, so purge must bust ETags."""
+    from datetime import UTC, datetime, timedelta
+
+    from app.core.config import settings
+    from app.crud.entries import purge_old_entries
+    from app.models.entries import Entry
+
+    newsletter_id = _make_newsletter_with_entry(client, "Purge NL")
+    # Age that entry past retention, then add a newer one so the latest-entry
+    # timestamp (the only other ETag input) is identical before and after purge.
+    db_session.query(Entry).filter(Entry.newsletter_id == newsletter_id).update(
+        {"received_at": datetime.now(UTC) - timedelta(days=30)}
+    )
+    db_session.commit()
+    client.post(
+        f"/newsletters/{newsletter_id}/entries",
+        json={
+            "subject": "Fresh",
+            "body": "<p>Fresh</p>",
+            "message_id": f"<entry_{uuid.uuid4()}@test.com>",
+        },
+    )
+    _latest_timestamp_cache.clear()
+
+    monkeypatch.setitem(settings.__dict__, "feed_retention_days", 60)
+    etag_before = client.get(f"/feeds/{newsletter_id}").headers["ETag"]
+
+    monkeypatch.setitem(settings.__dict__, "feed_retention_days", 7)
+    assert purge_old_entries(db_session) == 1
+
+    res = client.get(f"/feeds/{newsletter_id}", headers={"If-None-Match": etag_before})
+    assert res.status_code == 200, "purged feed still reported Not Modified"
+    assert res.headers["ETag"] != etag_before
+    assert res.text.count("<entry>") == 1
