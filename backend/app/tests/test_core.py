@@ -94,11 +94,11 @@ def test_process_emails(mock_imap, db_session: Session):
     mock_mail._simple_command.assert_called_once_with(
         "ID", '("name" "LetterFeed" "version" "0.4.0" "vendor" "LetterFeed")'
     )
-    mock_mail.select.assert_called_once_with("INBOX")
+    mock_mail.select.assert_called_once_with('"INBOX"')
     mock_mail.search.assert_called_once_with(None, "(UNSEEN)")
     mock_mail.fetch.assert_called_once_with(b"1", "(BODY.PEEK[])")
     mock_mail.store.assert_any_call(b"1", "+FLAGS", "\\Seen")
-    mock_mail.copy.assert_called_once_with(b"1", "Processed")
+    mock_mail.copy.assert_called_once_with(b"1", '"Processed"')
     mock_mail.store.assert_any_call(b"1", "+FLAGS", "\\Deleted")
     mock_mail.expunge.assert_called_once()
     mock_mail.logout.assert_called_once()
@@ -278,3 +278,126 @@ def test_process_emails_avoids_duplicates(mock_imap, db_session: Session):
     entries = get_entries_by_newsletter(db_session, newsletter.id)
     assert len(entries) == 1
     assert entries[0].subject == "Existing Subject"
+
+
+def test_quote_mailbox():
+    """Mailbox names are quoted and escaped for the IMAP wire format."""
+    from app.core.imap import quote_mailbox
+
+    assert quote_mailbox("INBOX") == '"INBOX"'
+    assert quote_mailbox("Newsletter Archive") == '"Newsletter Archive"'
+    # Already-quoted input is not double-quoted
+    assert quote_mailbox('"Newsletter Archive"') == '"Newsletter Archive"'
+    # Embedded quotes and backslashes are escaped per RFC 3501
+    assert quote_mailbox('Say "hi"\\now') == '"Say \\"hi\\"\\\\now"'
+
+
+@patch("app.services.email_processor.imaplib.IMAP4_SSL")
+def test_process_emails_quotes_folder_names_with_spaces(mock_imap, db_session: Session):
+    """Regression: SELECT/COPY must quote folder names containing spaces."""
+    settings_data = SettingsCreate(
+        imap_server="imap.test.com",
+        imap_username="test@test.com",
+        imap_password="password",
+        search_folder="Newsletters In",
+        move_to_folder="Newsletter Archive",
+    )
+    create_or_update_settings(db_session, settings_data)
+    create_newsletter(
+        db_session,
+        NewsletterCreate(name="NL", sender_emails=["newsletter@example.com"]),
+    )
+
+    mock_mail = MagicMock()
+    mock_imap.return_value = mock_mail
+    mock_mail.login.return_value = ("OK", [b"Login successful"])
+    mock_mail.select.return_value = ("OK", [b"1"])
+    mock_mail.search.return_value = ("OK", [b"1"])
+    mock_mail.copy.return_value = ("OK", [b"[COPYUID ...]"])
+    mock_mail.fetch.return_value = (
+        "OK",
+        [
+            (
+                None,
+                b"From: newsletter@example.com\nSubject: Hi\nMessage-ID: <a@b>\n\nBody",
+            )
+        ],
+    )
+
+    process_emails(db_session)
+
+    mock_mail.select.assert_called_once_with('"Newsletters In"')
+    mock_mail.copy.assert_called_once_with(b"1", '"Newsletter Archive"')
+
+
+@patch("app.services.email_processor.imaplib.IMAP4_SSL")
+def test_process_emails_matches_sender_case_insensitively(
+    mock_imap, db_session: Session
+):
+    """Regression: a registered sender must match regardless of address case."""
+    settings_data = SettingsCreate(
+        imap_server="imap.test.com",
+        imap_username="test@test.com",
+        imap_password="password",
+        auto_add_new_senders=True,
+    )
+    create_or_update_settings(db_session, settings_data)
+    newsletter = create_newsletter(
+        db_session,
+        NewsletterCreate(name="NL", sender_emails=["News@Example.com"]),
+    )
+
+    mock_mail = MagicMock()
+    mock_imap.return_value = mock_mail
+    mock_mail.login.return_value = ("OK", [b"Login successful"])
+    mock_mail.select.return_value = ("OK", [b"1"])
+    mock_mail.search.return_value = ("OK", [b"1"])
+    mock_mail.fetch.return_value = (
+        "OK",
+        [(None, b"From: NEWS@example.COM\nSubject: Hi\nMessage-ID: <c@d>\n\nBody")],
+    )
+
+    process_emails(db_session)
+
+    from app.crud.entries import get_entries_by_newsletter
+    from app.crud.newsletters import get_newsletters
+
+    # Matched the existing newsletter instead of auto-adding a duplicate
+    assert len(get_newsletters(db_session)) == 1
+    assert len(get_entries_by_newsletter(db_session, newsletter.id)) == 1
+
+
+@patch("app.services.email_processor.imaplib.IMAP4_SSL")
+def test_auto_add_does_not_duplicate_sender_differing_only_by_case(
+    mock_imap, db_session: Session
+):
+    """Auto-add must look up existing senders case-insensitively too."""
+    settings_data = SettingsCreate(
+        imap_server="imap.test.com",
+        imap_username="test@test.com",
+        imap_password="password",
+        auto_add_new_senders=True,
+    )
+    create_or_update_settings(db_session, settings_data)
+    create_newsletter(
+        db_session,
+        NewsletterCreate(name="Other", sender_emails=["Other@Example.com"]),
+    )
+
+    mock_mail = MagicMock()
+    mock_imap.return_value = mock_mail
+    mock_mail.login.return_value = ("OK", [b"Login successful"])
+    mock_mail.select.return_value = ("OK", [b"1"])
+    mock_mail.search.return_value = ("OK", [b"1"])
+    mock_mail.fetch.return_value = (
+        "OK",
+        [(None, b"From: other@example.com\nSubject: Hi\nMessage-ID: <e@f>\n\nBody")],
+    )
+
+    with patch("app.services.email_processor.get_newsletters", return_value=[]):
+        # Simulate the sender_map missing this sender so the auto-add path runs.
+        process_emails(db_session)
+
+    from app.crud.newsletters import get_newsletters
+
+    assert len(get_newsletters(db_session)) == 1

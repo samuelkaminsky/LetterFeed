@@ -11,10 +11,11 @@ from email.message import EmailMessage, Message
 import nh3
 from bs4 import BeautifulSoup
 from readability import Document
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.config import settings as env_settings
-from app.core.imap import send_client_id
+from app.core.imap import quote_mailbox, send_client_id
 from app.core.logging import get_logger
 from app.core.sanitization import ALLOWED_ATTRIBUTES, ALLOWED_TAGS, sanitize_html
 from app.crud.entries import (
@@ -56,7 +57,7 @@ def _connect_to_imap(
         mail = imaplib.IMAP4_SSL(settings.imap_server, timeout=30)
         mail.login(settings.imap_username, settings.imap_password)
         send_client_id(mail)
-        status, messages = mail.select(search_folder)
+        status, messages = mail.select(quote_mailbox(search_folder))
         if status != "OK":
             logger.error(
                 f"Failed to select mailbox: {search_folder}, status: {status}, messages: {messages}"
@@ -242,7 +243,9 @@ def _auto_add_newsletter(
     from app.models.newsletters import Sender
 
     # Check if this sender email already exists in the database
-    existing_sender = db.query(Sender).filter(Sender.email == sender).first()
+    existing_sender = (
+        db.query(Sender).filter(func.lower(Sender.email) == sender.lower()).first()
+    )
     if existing_sender:
         logger.warning(
             f"Sender {sender} is already registered to newsletter {existing_sender.newsletter_id}. "
@@ -296,7 +299,9 @@ def _process_single_email(
             return
 
         msg = email.message_from_bytes(data[0][1])
-        sender = email.utils.parseaddr(msg["From"])[1]
+        # Email addresses are matched case-insensitively: senders frequently
+        # vary the case of the domain (and occasionally the local part).
+        sender = email.utils.parseaddr(msg["From"])[1].lower()
         message_id = msg.get("Message-ID")
 
         if not message_id:
@@ -310,7 +315,7 @@ def _process_single_email(
         # If no exact match, check for wildcard matches
         if not newsletters:
             for sender_pattern, nls in sender_map.items():
-                if fnmatch.fnmatch(sender, sender_pattern):
+                if fnmatch.fnmatchcase(sender, sender_pattern):
                     newsletters = nls
                     break
 
@@ -409,7 +414,9 @@ def _process_single_email(
         final_move_folder = move_folder or settings.move_to_folder or detected_archive
         if final_move_folder:
             logger.debug(f"Moving email with id={num} to {final_move_folder}")
-            copy_status, copy_response = mail.copy(num, final_move_folder)
+            copy_status, copy_response = mail.copy(
+                num, quote_mailbox(final_move_folder)
+            )
             if copy_status == "OK":
                 mail.store(num, "+FLAGS", "\\Deleted")
             else:
@@ -494,9 +501,7 @@ def process_emails(db: Session) -> None:
             sender_map: dict[str, list[Newsletter]] = {}
             for nl in newsletters_in_folder:
                 for sender in nl.senders:
-                    if sender.email not in sender_map:
-                        sender_map[sender.email] = []
-                    sender_map[sender.email].append(nl)
+                    sender_map.setdefault(sender.email.lower(), []).append(nl)
 
             mail = _connect_to_imap(settings, search_folder)
             if not mail:
