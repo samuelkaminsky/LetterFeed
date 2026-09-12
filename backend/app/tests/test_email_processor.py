@@ -56,7 +56,7 @@ def test_process_single_email_with_newsletter_move_folder(db_session: Session):
     _process_single_email("1", mock_mail, db_session, sender_map, settings)
 
     # 3. ASSERT
-    mock_mail.copy.assert_called_once_with("1", "NewsletterArchive")
+    mock_mail.copy.assert_called_once_with("1", '"NewsletterArchive"')
     mock_mail.store.assert_any_call("1", "+FLAGS", "\\Deleted")
 
 
@@ -81,7 +81,7 @@ def test_process_single_email_with_global_move_folder(db_session: Session):
     _process_single_email("1", mock_mail, db_session, sender_map, settings)
 
     # 3. ASSERT
-    mock_mail.copy.assert_called_once_with("1", "GlobalArchive")
+    mock_mail.copy.assert_called_once_with("1", '"GlobalArchive"')
     mock_mail.store.assert_any_call("1", "+FLAGS", "\\Deleted")
 
 
@@ -108,7 +108,7 @@ def test_process_single_email_not_deleted_when_copy_fails(db_session: Session):
     _process_single_email("1", mock_mail, db_session, sender_map, settings)
 
     # 3. ASSERT
-    mock_mail.copy.assert_called_once_with("1", "GlobalArchive")
+    mock_mail.copy.assert_called_once_with("1", '"GlobalArchive"')
     # The email must NOT be flagged for deletion when the copy did not succeed.
     delete_calls = [
         c
@@ -402,7 +402,7 @@ def test_process_single_email_already_processed_still_archived(db_session: Sessi
     mock_create_entry.assert_not_called()
     # But should still mark as read and archive/move
     mock_mail.store.assert_any_call("1", "+FLAGS", "\\Seen")
-    mock_mail.copy.assert_called_once_with("1", "GlobalArchive")
+    mock_mail.copy.assert_called_once_with("1", '"GlobalArchive"')
     mock_mail.store.assert_any_call("1", "+FLAGS", "\\Deleted")
 
 
@@ -483,5 +483,5 @@ def test_process_single_email_with_auto_detected_archive_fallback(db_session: Se
 
     # 3. ASSERT
     # Should use the detected_archive fallback
-    mock_mail.copy.assert_called_once_with("1", "DetectedArchive")
+    mock_mail.copy.assert_called_once_with("1", '"DetectedArchive"')
     mock_mail.store.assert_any_call("1", "+FLAGS", "\\Deleted")

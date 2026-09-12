@@ -20,6 +20,20 @@ def _parse_folder_name(folder_str: str) -> str | None:
     return None
 
 
+def quote_mailbox(name: str) -> str:
+    """Quote a mailbox name for use in SELECT/COPY.
+
+    imaplib passes mailbox arguments through verbatim, so names containing
+    spaces (e.g. "Newsletter Archive") are sent as two atoms and rejected by
+    the server. Always quoting is safe under RFC 3501; a name the operator has
+    already wrapped in quotes is normalised first so it isn't double-quoted.
+    """
+    if len(name) >= 2 and name[0] == name[-1] == '"':
+        name = name[1:-1]
+    name = name.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{name}"'
+
+
 def send_client_id(mail: imaplib.IMAP4_SSL) -> None:
     """Send IMAP client identity for providers that require RFC 2971 ID."""
     imaplib.Commands.setdefault("ID", ("AUTH", "SELECTED"))
