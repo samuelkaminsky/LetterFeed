@@ -1,6 +1,9 @@
 #!/bin/bash
 set -e
 
+# Ensure HOME is set for git configuration
+export HOME=/root
+
 # Clear docker space to prevent "No space left on device" errors.
 # This script runs on every VM boot before `docker compose up`, when nothing is
 # running, so we prune conservatively:
@@ -29,9 +32,32 @@ echo \
 apt-get update
 apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
+# Keep cloudflared (the Cloudflare Tunnel that fronts the app) up to date from
+# Cloudflare's apt repo. Old versions can carry security fixes we must pick up
+# (e.g. >= 2026.10.2 drops the compromised eMudhra intermediates). The systemd
+# unit from `cloudflared service install` isn't package-owned, so upgrading
+# keeps the tunnel config; restart so the running service uses the new binary.
+# Non-fatal: a repo hiccup shouldn't stop LetterFeed itself from starting.
+if curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg -o /usr/share/keyrings/cloudflare-main.gpg \
+  && echo 'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main' \
+    > /etc/apt/sources.list.d/cloudflared.list \
+  && apt-get update \
+  && apt-get install -y cloudflared; then
+  cloudflared --version
+  if systemctl list-unit-files cloudflared.service >/dev/null 2>&1; then
+    systemctl restart cloudflared || true
+  fi
+else
+  echo "WARNING: failed to install/upgrade cloudflared" >&2
+fi
+
 # Prepare application directory
 mkdir -p /opt/letterfeed
 cd /opt/letterfeed
+
+# Configure git to trust /opt/letterfeed to bypass dubious ownership warnings
+git config --global --add safe.directory /opt/letterfeed || true
+git config --system --add safe.directory /opt/letterfeed || true
 
 # Clone or update LetterFeed repository
 if [ ! -d ".git" ]; then
@@ -67,5 +93,8 @@ echo "LETTERFEED_BACKEND_URL=http://backend:8000" >> .env
 # Force pull the latest production docker images (to bypass local cached images)
 docker compose pull
 
-# Start LetterFeed
+# Tear down any running/half-started containers to prevent daemon lock conflicts
+docker compose down || true
+
+# Start LetterFeed cleanly
 docker compose up -d
