@@ -51,6 +51,42 @@ else
   echo "WARNING: failed to install/upgrade cloudflared" >&2
 fi
 
+# Apply Debian security updates and cloudflared releases daily between boots.
+# If an update needs a reboot (e.g. kernel), reboot at 04:00 UTC; this script
+# then runs again and refreshes everything else.
+if apt-get install -y unattended-upgrades; then
+  cat > /etc/apt/apt.conf.d/20auto-upgrades <<'EOF'
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+EOF
+  cat > /etc/apt/apt.conf.d/51letterfeed-unattended-upgrades <<'EOF'
+Unattended-Upgrade::Origins-Pattern {
+  "origin=Debian,codename=${distro_codename}-security,label=Debian-Security";
+  "origin=cloudflared,codename=any";
+};
+Unattended-Upgrade::Automatic-Reboot "true";
+Unattended-Upgrade::Automatic-Reboot-Time "04:00";
+EOF
+  # The cloudflared package doesn't restart the tunnel when it's upgraded, so
+  # restart it whenever the binary changes.
+  cat > /etc/systemd/system/cloudflared-restart.path <<'EOF'
+[Path]
+PathChanged=/usr/bin/cloudflared
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  cat > /etc/systemd/system/cloudflared-restart.service <<'EOF'
+[Service]
+Type=oneshot
+ExecStart=/bin/systemctl try-restart cloudflared.service
+EOF
+  systemctl daemon-reload
+  systemctl enable --now cloudflared-restart.path || true
+else
+  echo "WARNING: failed to configure unattended-upgrades" >&2
+fi
+
 # Prepare application directory
 mkdir -p /opt/letterfeed
 cd /opt/letterfeed

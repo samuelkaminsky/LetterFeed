@@ -11,6 +11,11 @@ on:
       - master
   pull_request:
     branches: [ "master" ]
+  # Weekly rebuild so the images pick up patched base images (python/node
+  # alpine) even when no code changed; watchtower then rolls them out.
+  schedule:
+    - cron: "0 9 * * 1"
+  workflow_dispatch:
 
 jobs:
   backend:
@@ -94,6 +99,7 @@ jobs:
           file: backend/Dockerfile
           platforms: linux/amd64
           push: true
+          pull: true
           build-args: |
             GIT_SHA=${{ github.sha }}
           tags: ${{ steps.meta_backend.outputs.tags }}
@@ -136,5 +142,6 @@ jobs:
           file: frontend/Dockerfile
           platforms: linux/amd64
           push: true
+          pull: true
           tags: ${{ steps.meta_frontend.outputs.tags }}
           labels: ${{ steps.meta_frontend.outputs.labels }}
