@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import engine
 from app.crud.entries import _latest_timestamp_cache
-from app.crud.feed_cache import _feed_memory_cache
+from app.crud.feed_cache import _feed_gzip_cache, _feed_memory_cache
 
 
 @contextmanager
@@ -429,3 +429,63 @@ def test_purge_old_entries_invalidates_etag(
     assert res.status_code == 200, "purged feed still reported Not Modified"
     assert res.headers["ETag"] != etag_before
     assert res.text.count("<entry>") == 1
+
+
+def test_weak_etag_returns_304(client: TestClient, db_session: Session):
+    """A proxy-weakened ETag (W/"...") or an ETag list still yields a 304."""
+    unique_email = f"weak_etag_{uuid.uuid4()}@example.com"
+    create_response = client.post(
+        "/newsletters", json={"name": "Weak ETag NL", "sender_emails": [unique_email]}
+    )
+    newsletter_id = create_response.json()["id"]
+    client.post(
+        f"/newsletters/{newsletter_id}/entries",
+        json={
+            "subject": "Weak Entry",
+            "body": "<p>Body</p>",
+            "message_id": f"<entry_{uuid.uuid4()}@test.com>",
+        },
+    )
+
+    etag = client.get(f"/feeds/{newsletter_id}").headers["ETag"]
+
+    for header in (f"W/{etag}", f'"other", {etag}', "*"):
+        resp = client.get(f"/feeds/{newsletter_id}", headers={"If-None-Match": header})
+        assert resp.status_code == 304, header
+
+    resp = client.get(f"/feeds/{newsletter_id}", headers={"If-None-Match": '"other"'})
+    assert resp.status_code == 200
+
+
+def test_gzip_body_is_precompressed_once(client: TestClient, db_session: Session):
+    """Repeated gzip responses reuse the cached compressed body."""
+    unique_email = f"pregzip_{uuid.uuid4()}@example.com"
+    create_response = client.post(
+        "/newsletters", json={"name": "Pregzip NL", "sender_emails": [unique_email]}
+    )
+    newsletter_id = create_response.json()["id"]
+    client.post(
+        f"/newsletters/{newsletter_id}/entries",
+        json={
+            "subject": "Pregzip Entry",
+            "body": "<p>" + "B" * 1500 + "</p>",
+            "message_id": f"<entry_{uuid.uuid4()}@test.com>",
+        },
+    )
+
+    headers = {"Accept-Encoding": "gzip"}
+    first = client.get(f"/feeds/{newsletter_id}", headers=headers)
+    assert first.headers.get("content-encoding") == "gzip"
+    etag, compressed = _feed_gzip_cache[newsletter_id]
+    assert etag == first.headers["ETag"]
+
+    second = client.get(f"/feeds/{newsletter_id}", headers=headers)
+    assert second.headers.get("content-encoding") == "gzip"
+    assert _feed_gzip_cache[newsletter_id][1] is compressed
+    assert second.text == first.text
+
+    plain = client.get(
+        f"/feeds/{newsletter_id}", headers={"Accept-Encoding": "identity"}
+    )
+    assert plain.headers.get("content-encoding") is None
+    assert plain.text == first.text
