@@ -12,7 +12,12 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.core.logging import get_logger
 from app.crud.entries import get_latest_entry_timestamp_cached
-from app.crud.feed_cache import compute_feed_etag, get_cached_feed, set_cached_feed
+from app.crud.feed_cache import (
+    compute_feed_etag,
+    get_cached_feed,
+    get_gzipped_feed,
+    set_cached_feed,
+)
 from app.crud.newsletters import get_newsletter_identity
 from app.crud.settings import get_master_feed_token
 from app.services.feed_generator import generate_feed, generate_master_feed
@@ -26,6 +31,34 @@ def _to_utc(dt: datetime) -> datetime:
     return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
 
 
+def _etag_matches(if_none_match: str, etag: str) -> bool:
+    """Weak If-None-Match comparison (RFC 9110 13.1.2).
+
+    Proxies such as Cloudflare rewrite our strong ETag to W/"..." when they
+    re-compress the body, so readers echo the weak form back. An exact string
+    compare would miss it and resend the full feed on every refresh.
+    """
+    if if_none_match.strip() == "*":
+        return True
+    opaque = etag.removeprefix("W/")
+    return any(
+        candidate.strip().removeprefix("W/") == opaque
+        for candidate in if_none_match.split(",")
+    )
+
+
+def _accepts_gzip(accept_encoding: str | None) -> bool:
+    """Return True if the Accept-Encoding header allows gzip."""
+    if not accept_encoding:
+        return False
+    for part in accept_encoding.split(","):
+        coding, _, params = part.strip().partition(";")
+        if coding.strip().lower() in ("gzip", "*"):
+            q = params.strip().lower().replace(" ", "")
+            return q not in ("q=0", "q=0.0", "q=0.00", "q=0.000")
+    return False
+
+
 def _not_modified(
     latest_timestamp: datetime | None,
     etag: str,
@@ -33,7 +66,7 @@ def _not_modified(
     if_modified_since: str | None,
 ) -> bool:
     """Return True if the client's cached copy is still current (send 304)."""
-    if if_none_match == etag:
+    if if_none_match and _etag_matches(if_none_match, etag):
         logger.debug("Feed unmodified (ETag match), returning 304")
         return True
 
@@ -72,6 +105,7 @@ def _conditional_feed_response(
     if_modified_since: str | None,
     generate_fn: Callable[[], str | bytes | None],
     is_head: bool = False,
+    accept_encoding: str | None = None,
 ) -> Response:
     """Serve a feed with ETag/If-Modified-Since handling and DB/memory caching."""
     etag = compute_feed_etag(cache_key, latest_timestamp)
@@ -94,6 +128,16 @@ def _conditional_feed_response(
         )
         headers["Content-Length"] = str(len(content_bytes))
         return Response(content=b"", media_type="application/atom+xml", headers=headers)
+
+    if _accepts_gzip(accept_encoding):
+        # Serve the pre-compressed body; GZipMiddleware skips responses that
+        # already carry a Content-Encoding.
+        headers["Content-Encoding"] = "gzip"
+        return Response(
+            content=get_gzipped_feed(cache_key, etag, cached_feed),
+            media_type="application/atom+xml",
+            headers=headers,
+        )
 
     return Response(
         content=cached_feed, media_type="application/atom+xml", headers=headers
@@ -137,6 +181,7 @@ def get_master_feed(
         if_modified_since,
         lambda: generate_master_feed(db, request=request),
         is_head=(request.method == "HEAD"),
+        accept_encoding=request.headers.get("accept-encoding"),
     )
 
 
@@ -191,4 +236,5 @@ def get_newsletter_feed(
             limit=settings.newsletter_feed_limit,
         ),
         is_head=(request.method == "HEAD"),
+        accept_encoding=request.headers.get("accept-encoding"),
     )
