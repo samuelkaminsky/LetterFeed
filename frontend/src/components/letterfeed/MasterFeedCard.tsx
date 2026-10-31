@@ -3,18 +3,21 @@
 import { useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Rss, ExternalLink, Copy, Check } from "lucide-react"
-import { getMasterFeedUrl } from "@/lib/api"
+import { Rss, ExternalLink, Copy, Check, Download } from "lucide-react"
+import { getMasterFeedUrl, type Newsletter } from "@/lib/api"
+import { downloadOpml } from "@/lib/opml"
 import { toast } from "sonner"
 import { toAbsoluteUrl, useOrigin } from "@/hooks/useOrigin"
 
 interface MasterFeedCardProps {
   masterFeedToken?: string | null
+  newsletters?: Newsletter[]
 }
 
-export function MasterFeedCard({ masterFeedToken }: MasterFeedCardProps) {
+export function MasterFeedCard({ masterFeedToken, newsletters = [] }: MasterFeedCardProps) {
   const feedUrl = getMasterFeedUrl(masterFeedToken)
-  const absoluteUrl = toAbsoluteUrl(feedUrl, useOrigin())
+  const origin = useOrigin()
+  const absoluteUrl = toAbsoluteUrl(feedUrl, origin)
   const [copied, setCopied] = useState(false)
 
   const handleCopy = async () => {
@@ -80,6 +83,22 @@ export function MasterFeedCard({ masterFeedToken }: MasterFeedCardProps) {
             </div>
           </div>
         </div>
+        {newsletters.length > 0 && (
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-1">
+            <p className="text-xs text-muted-foreground">
+              Prefer one feed per newsletter? Export them all as OPML and import the file into your RSS reader.
+            </p>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => downloadOpml(newsletters, origin)}
+              className="h-8 text-xs flex items-center gap-1.5 font-medium self-end sm:self-auto shrink-0"
+            >
+              <Download className="w-3.5 h-3.5 text-neutral-500" />
+              <span>Export OPML</span>
+            </Button>
+          </div>
+        )}
       </CardContent>
     </Card>
   )

@@ -75,7 +75,7 @@ function LetterFeedApp() {
           onOpenSettings={() => setIsSettingsOpen(true)}
         />
 
-        {newsletters.length > 0 && <MasterFeedCard masterFeedToken={settings?.master_feed_token} />}
+        {newsletters.length > 0 && <MasterFeedCard masterFeedToken={settings?.master_feed_token} newsletters={newsletters} />}
 
         {newsletters.length > 0 ? (
           <NewsletterList newsletters={newsletters} onEditNewsletter={openEditDialog} />
