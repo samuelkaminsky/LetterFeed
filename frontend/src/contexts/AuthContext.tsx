@@ -8,7 +8,7 @@ interface AuthContextType {
   isAuthenticated: boolean
   isAuthEnabled: boolean
   login: (username: string, password: string) => Promise<void>
-  logout: () => void
+  logout: () => Promise<void>
   isLoading: boolean
 }
 
@@ -22,25 +22,24 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
   useEffect(() => {
     const checkAuth = async () => {
-      setIsLoading(true);
       try {
-        const { auth_enabled } = await getAuthStatus();
-        setIsAuthEnabled(auth_enabled);
-        if (!auth_enabled) {
-          setIsAuthenticated(true);
+        const status = await getAuthStatus()
+        setIsAuthEnabled(status.auth_enabled)
+        if (typeof status.authenticated === "boolean") {
+          setIsAuthenticated(status.authenticated)
         } else {
-          const isValid = await verifyAuth();
-          setIsAuthenticated(isValid);
+          const isValid = !status.auth_enabled ? true : await verifyAuth()
+          setIsAuthenticated(isValid)
         }
       } catch (error) {
-        setIsAuthenticated(false);
-        console.error("Authentication check failed", error);
+        setIsAuthenticated(false)
+        console.error("Authentication check failed", error)
       } finally {
-        setIsLoading(false);
+        setIsLoading(false)
       }
-    };
-    checkAuth();
-  }, []);
+    }
+    checkAuth()
+  }, [])
 
   const login = async (username: string, password: string) => {
     try {
@@ -53,12 +52,15 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     }
   }
 
-  const logout = () => {
-    apiLogout().catch((error) => {
-      console.error("Logout API call failed", error);
-    });
-    setIsAuthenticated(false)
-    router.push("/login")
+  const logout = async () => {
+    try {
+      await apiLogout()
+    } catch (error) {
+      console.error("Logout API call failed", error)
+    } finally {
+      setIsAuthenticated(false)
+      router.push("/login")
+    }
   }
 
   return (

@@ -12,10 +12,15 @@ import { toAbsoluteUrl, useOrigin } from "@/hooks/useOrigin"
 interface NewsletterCardProps {
   newsletter: Newsletter
   onEdit: (newsletter: Newsletter) => void
+  isAuthEnabled?: boolean
 }
 
-export function NewsletterCard({ newsletter, onEdit }: NewsletterCardProps) {
-  const feedUrl = getFeedUrl(newsletter)
+export function NewsletterCard({
+  newsletter,
+  onEdit,
+  isAuthEnabled = true,
+}: NewsletterCardProps) {
+  const feedUrl = getFeedUrl(newsletter, isAuthEnabled)
   const absoluteUrl = toAbsoluteUrl(feedUrl, useOrigin())
   const [copied, setCopied] = useState(false)
 
@@ -39,6 +44,11 @@ export function NewsletterCard({ newsletter, onEdit }: NewsletterCardProps) {
             <CardTitle className="flex items-center gap-2">
               <Rss className="w-5 h-5 text-orange-500" />
               {newsletter.name}
+              {!newsletter.is_active && (
+                <Badge variant="outline" className="text-muted-foreground">
+                  Paused
+                </Badge>
+              )}
             </CardTitle>
             <CardDescription>
               {newsletter.entries_count} entr{newsletter.entries_count !== 1 ? "ies" : "y"}
@@ -51,7 +61,7 @@ export function NewsletterCard({ newsletter, onEdit }: NewsletterCardProps) {
       </CardHeader>
       <CardContent className="space-y-4 flex-grow">
         <div>
-          <h4 className="text-sm font-medium text-gray-700 mb-2 flex items-center gap-1">
+          <h4 className="text-sm font-medium text-foreground mb-2 flex items-center gap-1">
             <Mail className="w-4 h-4" />
             Email Addresses
           </h4>
@@ -81,7 +91,7 @@ export function NewsletterCard({ newsletter, onEdit }: NewsletterCardProps) {
                 title="Copy RSS URL"
               >
                 {copied ? (
-                  <Check className="w-3.5 h-3.5 text-green-500 animate-scale" />
+                  <Check className="w-3.5 h-3.5 text-green-500 motion-safe:animate-in motion-safe:zoom-in-75 duration-150" />
                 ) : (
                   <Copy className="w-3.5 h-3.5 text-neutral-500" />
                 )}

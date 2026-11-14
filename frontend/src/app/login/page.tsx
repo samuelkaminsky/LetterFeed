@@ -15,6 +15,7 @@ import { LoadingSpinner } from "@/components/letterfeed/LoadingSpinner"
 export default function LoginPage() {
   const [username, setUsername] = useState("")
   const [password, setPassword] = useState("")
+  const [isSubmitting, setIsSubmitting] = useState(false)
   const { login, isAuthenticated, isLoading } = useAuth()
   const router = useRouter()
 
@@ -32,10 +33,13 @@ export default function LoginPage() {
       return
     }
 
+    setIsSubmitting(true)
     try {
       await login(username, password)
     } catch {
       // The error is already toasted by the API layer,
+    } finally {
+      setIsSubmitting(false)
     }
   }
 
@@ -56,7 +60,7 @@ export default function LoginPage() {
               className="rounded-lg"
             />
           </div>
-          <h2 className="text-3xl font-bold text-foreground">LetterFeed</h2>
+          <h1 className="text-3xl font-bold text-foreground">LetterFeed</h1>
           <p className="mt-2 text-muted-foreground">Sign in to your account</p>
         </div>
 
@@ -67,25 +71,34 @@ export default function LoginPage() {
                 <Label htmlFor="username">Username</Label>
                 <Input
                   id="username"
+                  name="username"
                   type="text"
+                  autoComplete="username"
+                  spellCheck={false}
+                  autoCapitalize="none"
+                  autoCorrect="off"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
                   placeholder="Enter your username"
+                  disabled={isSubmitting}
                 />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="password">Password</Label>
                 <Input
                   id="password"
+                  name="password"
                   type="password"
+                  autoComplete="current-password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="Enter your password"
+                  disabled={isSubmitting}
                 />
               </div>
 
-              <Button type="submit" className="w-full">
-                Sign In
+              <Button type="submit" className="w-full" disabled={isSubmitting}>
+                {isSubmitting ? "Signing In..." : "Sign In"}
               </Button>
             </form>
           </CardContent>

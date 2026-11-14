@@ -1,4 +1,5 @@
 import {
+  getAuthStatus,
   getNewsletters,
   createNewsletter,
   updateNewsletter,
@@ -38,7 +39,7 @@ const mockFetch = <T,>(data: T, ok = true, statusText = "OK") => {
   })
 }
 
-const mockFetchError = (data: any = {}, statusText = "Bad Request", status = 400) => { // eslint-disable-line @typescript-eslint/no-explicit-any
+const mockFetchError = (data: unknown = {}, statusText = "Bad Request", status = 400) => {
   ;(fetch as jest.Mock).mockResolvedValueOnce({
     ok: false,
     json: () => Promise.resolve(data),
@@ -51,9 +52,20 @@ describe("API Functions", () => {
   const API_BASE_URL = '/api'
 
   beforeEach(() => {
-    // Reset the mock before each test
     ;(fetch as jest.Mock).mockClear()
     ;(toast.error as jest.Mock).mockClear()
+  })
+
+  describe("getAuthStatus", () => {
+    it("should return auth_enabled and optional authenticated boolean", async () => {
+      mockFetch({ auth_enabled: true, authenticated: true })
+
+      const status = await getAuthStatus()
+      expect(status).toEqual({ auth_enabled: true, authenticated: true })
+      expect(fetch).toHaveBeenCalledWith(`${API_BASE_URL}/auth/status`, {
+        credentials: "same-origin",
+      })
+    })
   })
 
   describe("login", () => {
@@ -72,11 +84,62 @@ describe("API Functions", () => {
       expect(toast.error).not.toHaveBeenCalled()
     })
 
-    it("should throw an error if login fails", async () => {
+    it("should throw a toasted error if login fails", async () => {
       mockFetchError({ detail: "Incorrect username or password" }, "Unauthorized", 401)
 
-      await expect(login("user", "wrong-pass")).rejects.toThrow("Incorrect username or password")
+      let caught: unknown
+      try {
+        await login("user", "wrong-pass")
+      } catch (err) {
+        caught = err
+      }
+      expect(caught).toBeInstanceOf(Error)
+      expect((caught as Error).message).toBe("Incorrect username or password")
+      expect(caught).toHaveProperty("toasted", true)
       expect(toast.error).toHaveBeenCalledWith("Incorrect username or password")
+    })
+  })
+
+  describe("error handling", () => {
+    it("formats FastAPI 422 validation error arrays into a readable string", async () => {
+      mockFetchError(
+        {
+          detail: [
+            { loc: ["body", "name"], msg: "Field required", type: "missing" },
+            { loc: ["body", "email_check_interval"], msg: "Input should be greater than or equal to 1" },
+          ],
+        },
+        "Unprocessable Entity",
+        422
+      )
+
+      const expected = "Field required; Input should be greater than or equal to 1"
+      let caught: unknown
+      try {
+        await createNewsletter({
+          name: "",
+          sender_emails: [],
+          extract_content: false,
+        })
+      } catch (err) {
+        caught = err
+      }
+      expect(caught).toBeInstanceOf(Error)
+      expect((caught as Error).message).toBe(expected)
+      expect(caught).toHaveProperty("toasted", true)
+      expect(toast.error).toHaveBeenCalledWith(expected)
+    })
+
+    it("does not mutate the caller's payload or options objects", async () => {
+      const payload: NewsletterCreate = {
+        name: "Immutable",
+        sender_emails: ["a@example.com"],
+        extract_content: false,
+      }
+      const frozenPayload = Object.freeze(payload)
+      mockFetch({ id: "1", ...payload, slug: null, is_active: true, senders: [], entries_count: 0 })
+
+      await expect(createNewsletter(frozenPayload)).resolves.toBeDefined()
     })
   })
 
@@ -274,6 +337,20 @@ describe("API Functions", () => {
       })
       expect(toast.error).not.toHaveBeenCalled()
     })
+
+    it("suppresses toast notifications by default on connection test failure", async () => {
+      mockFetchError({ detail: "Invalid credentials" }, "Bad Request", 400)
+
+      await expect(testImapConnection()).rejects.toThrow("Invalid credentials")
+      expect(toast.error).not.toHaveBeenCalled()
+    })
+
+    it("shows toast notifications when suppressToast is explicitly false", async () => {
+      mockFetchError({ detail: "Invalid credentials" }, "Bad Request", 400)
+
+      await expect(testImapConnection(undefined, { suppressToast: false })).rejects.toThrow("Invalid credentials")
+      expect(toast.error).toHaveBeenCalledWith("Invalid credentials")
+    })
   })
 
   describe("processEmails", () => {
@@ -292,7 +369,7 @@ describe("API Functions", () => {
   })
 
   describe("getFeedUrl", () => {
-    it("should return the correct feed URL using id even if slug is available", () => {
+    it("should return the correct feed URL using id even if slug is available when auth is enabled", () => {
       const newsletter: Newsletter = {
         id: "123",
         slug: "my-newsletter",
@@ -303,8 +380,21 @@ describe("API Functions", () => {
         extract_content: false,
       }
       const expectedUrl = `${API_BASE_URL}/feeds/123`
-      const url = getFeedUrl(newsletter)
-      expect(url).toBe(expectedUrl)
+      expect(getFeedUrl(newsletter)).toBe(expectedUrl)
+      expect(getFeedUrl(newsletter, true)).toBe(expectedUrl)
+    })
+
+    it("should return the slug URL when auth is disabled and slug is available", () => {
+      const newsletter: Newsletter = {
+        id: "123",
+        slug: "my-newsletter",
+        name: "Test",
+        is_active: true,
+        senders: [],
+        entries_count: 0,
+        extract_content: false,
+      }
+      expect(getFeedUrl(newsletter, false)).toBe(`${API_BASE_URL}/feeds/my-newsletter`)
     })
 
     it("should return the correct feed URL using id when slug is not available", () => {
@@ -318,8 +408,8 @@ describe("API Functions", () => {
         extract_content: false,
       }
       const expectedUrl = `${API_BASE_URL}/feeds/123`
-      const url = getFeedUrl(newsletter)
-      expect(url).toBe(expectedUrl)
+      expect(getFeedUrl(newsletter)).toBe(expectedUrl)
+      expect(getFeedUrl(newsletter, false)).toBe(expectedUrl)
     })
   })
 })

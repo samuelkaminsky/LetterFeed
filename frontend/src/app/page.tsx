@@ -1,8 +1,9 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 
 import withAuth from "@/components/withAuth"
+import { useAuth } from "@/hooks/useAuth"
 import {
   getNewsletters,
   getSettings,
@@ -19,15 +20,15 @@ import { NewsletterDialog } from "@/components/letterfeed/NewsletterDialog"
 import { SettingsDialog } from "@/components/letterfeed/SettingsDialog"
 
 async function loadDashboardData() {
-  const [newsletters, settings, folderOptions] = await Promise.all([
+  const [newsletters, settings] = await Promise.all([
     getNewsletters(),
     getSettings(),
-    getImapFolders(),
   ])
-  return { newsletters, settings, folderOptions }
+  return { newsletters, settings }
 }
 
 function LetterFeedApp() {
+  const { isAuthEnabled } = useAuth()
   const [newsletters, setNewsletters] = useState<Newsletter[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [settings, setSettings] = useState<AppSettings | null>(null)
@@ -37,12 +38,14 @@ function LetterFeedApp() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
   const [editingNewsletter, setEditingNewsletter] = useState<Newsletter | null>(null)
 
+  const foldersLoadedRef = useRef(false)
+  const foldersInFlightRef = useRef<Promise<void> | null>(null)
+
   const fetchData = () =>
     loadDashboardData()
       .then((data) => {
         setNewsletters(data.newsletters)
         setSettings(data.settings)
-        setFolderOptions(data.folderOptions)
       })
       .catch((error) => {
         console.error("Failed to fetch data:", error)
@@ -51,16 +54,71 @@ function LetterFeedApp() {
         setIsLoading(false)
       })
 
+  const refreshFolders = () => {
+    if (foldersInFlightRef.current) {
+      return foldersInFlightRef.current
+    }
+    const request = getImapFolders()
+      .then((folders) => {
+        setFolderOptions(folders)
+        foldersLoadedRef.current = true
+      })
+      .catch((error) => {
+        console.error("Failed to fetch IMAP folders:", error)
+      })
+      .finally(() => {
+        foldersInFlightRef.current = null
+      })
+    foldersInFlightRef.current = request
+    return request
+  }
+
+  const ensureFoldersLoaded = () => {
+    if (!foldersLoadedRef.current) {
+      void refreshFolders()
+    }
+  }
+
   useEffect(() => {
-    fetchData()
+    let active = true
+    loadDashboardData()
+      .then((data) => {
+        if (!active) return
+        setNewsletters(data.newsletters)
+        setSettings(data.settings)
+      })
+      .catch((error) => {
+        console.error("Failed to fetch data:", error)
+      })
+      .finally(() => {
+        if (active) {
+          setIsLoading(false)
+        }
+      })
+    return () => {
+      active = false
+    }
   }, [])
+
+  const openAddDialog = () => {
+    setIsAddDialogOpen(true)
+    ensureFoldersLoaded()
+  }
+
+  const openSettingsDialog = () => {
+    setIsSettingsOpen(true)
+    ensureFoldersLoaded()
+  }
 
   const openEditDialog = (newsletter: Newsletter) => {
     setEditingNewsletter(newsletter)
+    ensureFoldersLoaded()
   }
 
-  const closeEditDialog = () => {
-    setEditingNewsletter(null)
+  const closeEditDialog = (open: boolean) => {
+    if (!open) {
+      setEditingNewsletter(null)
+    }
   }
 
   if (isLoading) {
@@ -71,21 +129,27 @@ function LetterFeedApp() {
     <div className="min-h-screen bg-background">
       <div className="container mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <Header
-          onOpenAddNewsletter={() => setIsAddDialogOpen(true)}
-          onOpenSettings={() => setIsSettingsOpen(true)}
+          onOpenAddNewsletter={openAddDialog}
+          onOpenSettings={openSettingsDialog}
+          onProcessSuccess={fetchData}
         />
 
         {newsletters.length > 0 && <MasterFeedCard masterFeedToken={settings?.master_feed_token} />}
 
         {newsletters.length > 0 ? (
-          <NewsletterList newsletters={newsletters} onEditNewsletter={openEditDialog} />
+          <NewsletterList
+            newsletters={newsletters}
+            onEditNewsletter={openEditDialog}
+            isAuthEnabled={isAuthEnabled}
+          />
         ) : (
-          <EmptyState onAddNewsletter={() => setIsAddDialogOpen(true)} />
+          <EmptyState onAddNewsletter={openAddDialog} />
         )}
 
         <NewsletterDialog
           isOpen={isAddDialogOpen}
           folderOptions={folderOptions}
+          isAuthEnabled={isAuthEnabled}
           onOpenChange={setIsAddDialogOpen}
           onSuccess={fetchData}
         />
@@ -94,9 +158,10 @@ function LetterFeedApp() {
           newsletter={editingNewsletter}
           isOpen={!!editingNewsletter}
           folderOptions={folderOptions}
+          isAuthEnabled={isAuthEnabled}
           onOpenChange={closeEditDialog}
           onSuccess={() => {
-            closeEditDialog()
+            setEditingNewsletter(null)
             fetchData()
           }}
         />
@@ -107,7 +172,11 @@ function LetterFeedApp() {
             folderOptions={folderOptions}
             isOpen={isSettingsOpen}
             onOpenChange={setIsSettingsOpen}
-            onSuccess={fetchData}
+            onSuccess={() => {
+              fetchData()
+              foldersLoadedRef.current = false
+              void refreshFolders()
+            }}
           />
         )}
       </div>

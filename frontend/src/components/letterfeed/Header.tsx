@@ -3,6 +3,7 @@
 import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import { processEmails } from "@/lib/api"
+import { isToastedError } from "@/lib/utils"
 import { useAuth } from "@/hooks/useAuth"
 import { LogOut, Mail, Plus, Settings, Loader2 } from "lucide-react"
 import Image from "next/image"
@@ -11,9 +12,14 @@ import { toast } from "sonner"
 interface HeaderProps {
   onOpenAddNewsletter: () => void
   onOpenSettings: () => void
+  onProcessSuccess?: () => void
 }
 
-export function Header({ onOpenAddNewsletter, onOpenSettings }: HeaderProps) {
+export function Header({
+  onOpenAddNewsletter,
+  onOpenSettings,
+  onProcessSuccess,
+}: HeaderProps) {
   const { logout, isAuthEnabled } = useAuth()
   const [isProcessing, setIsProcessing] = useState(false)
 
@@ -22,20 +28,23 @@ export function Header({ onOpenAddNewsletter, onOpenSettings }: HeaderProps) {
     try {
       await processEmails()
       toast.success("Email processing finished successfully!")
+      onProcessSuccess?.()
     } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : "An unexpected error occurred."
       console.error(error)
-      toast.error(message)
+      if (!isToastedError(error)) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : "An unexpected error occurred."
+        toast.error(message)
+      }
     } finally {
       setIsProcessing(false)
     }
   }
 
   return (
-    <div className="flex flex-col md:flex-row items-center justify-between mb-8">
+    <header className="flex flex-col md:flex-row items-center justify-between mb-8">
       <div className="flex items-center gap-4 mb-4 md:mb-0">
         <Image
           src="/logo.png"
@@ -60,7 +69,7 @@ export function Header({ onOpenAddNewsletter, onOpenSettings }: HeaderProps) {
 
         <Button variant="outline" onClick={handleProcessEmails} disabled={isProcessing}>
           {isProcessing ? (
-            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+            <Loader2 className="w-4 h-4 mr-2 motion-safe:animate-spin" />
           ) : (
             <Mail className="w-4 h-4 mr-2" />
           )}
@@ -79,6 +88,6 @@ export function Header({ onOpenAddNewsletter, onOpenSettings }: HeaderProps) {
           </Button>
         )}
       </div>
-    </div>
+    </header>
   )
 }

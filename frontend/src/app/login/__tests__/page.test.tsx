@@ -26,7 +26,6 @@ describe("LoginPage", () => {
 
   beforeEach(() => {
     jest.clearAllMocks()
-    // Default mock for useAuth
     mockedUseAuth.mockReturnValue({
       login,
       isAuthenticated: false,
@@ -34,11 +33,13 @@ describe("LoginPage", () => {
     })
   })
 
-  it("renders the login page when not authenticated", () => {
+  it("renders the login page with proper autocomplete attributes when not authenticated", () => {
     render(<LoginPage />)
     expect(screen.getByText("LetterFeed")).toBeInTheDocument()
-    expect(screen.getByLabelText("Username")).toBeInTheDocument()
-    expect(screen.getByLabelText("Password")).toBeInTheDocument()
+    const usernameInput = screen.getByLabelText("Username")
+    const passwordInput = screen.getByLabelText("Password")
+    expect(usernameInput).toHaveAttribute("autocomplete", "username")
+    expect(passwordInput).toHaveAttribute("autocomplete", "current-password")
     expect(screen.getByRole("button", { name: "Sign In" })).toBeInTheDocument()
   })
 
@@ -74,15 +75,28 @@ describe("LoginPage", () => {
     expect(passwordInput).toHaveValue("test-password")
   })
 
-  it("calls login on form submission with username and password", async () => {
+  it("calls login on form submission and disables Sign In button while submitting", async () => {
+    let resolveLogin!: () => void
+    login.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveLogin = resolve
+        })
+    )
+
     render(<LoginPage />)
     const usernameInput = screen.getByLabelText("Username")
     const passwordInput = screen.getByLabelText("Password")
     fireEvent.change(usernameInput, { target: { value: "test-user" } })
     fireEvent.change(passwordInput, { target: { value: "test-password" } })
     fireEvent.click(screen.getByRole("button", { name: "Sign In" }))
+
+    expect(screen.getByRole("button", { name: /Signing In/i })).toBeDisabled()
+
+    resolveLogin()
     await waitFor(() => {
       expect(login).toHaveBeenCalledWith("test-user", "test-password")
+      expect(screen.getByRole("button", { name: "Sign In" })).toBeEnabled()
     })
   })
 
