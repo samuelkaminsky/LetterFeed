@@ -13,21 +13,26 @@ docker system prune -f || true
 docker image prune -f || true
 apt-get clean || true
 
-# Update and install Docker using the official repo to ensure docker-compose-plugin is available
-apt-get update
-apt-get install -y ca-certificates curl gnupg git
+# Ensure prerequisite packages are installed if missing (e.g., git for repo sync)
+if ! dpkg -s ca-certificates curl gnupg git >/dev/null 2>&1; then
+  apt-get update
+  apt-get install -y ca-certificates curl gnupg git
+fi
 
-install -m 0755 -d /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor --yes -o /etc/apt/keyrings/docker.gpg
-chmod a+r /etc/apt/keyrings/docker.gpg
+# Install Docker using the official repo if not already installed
+if ! command -v docker >/dev/null 2>&1; then
+  install -m 0755 -d /etc/apt/keyrings
+  curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor --yes -o /etc/apt/keyrings/docker.gpg
+  chmod a+r /etc/apt/keyrings/docker.gpg
 
-echo \
-  "deb [arch="$(dpkg --print-architecture)" signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian \
-  "$(. /etc/os-release && echo "$VERSION_CODENAME")" stable" | \
-  tee /etc/apt/sources.list.d/docker.list > /dev/null
+  echo \
+    "deb [arch="$(dpkg --print-architecture)" signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian \
+    "$(. /etc/os-release && echo "$VERSION_CODENAME")" stable" | \
+    tee /etc/apt/sources.list.d/docker.list > /dev/null
 
-apt-get update
-apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  apt-get update
+  apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+fi
 
 # Prepare application directory
 mkdir -p /opt/letterfeed
@@ -46,23 +51,32 @@ fi
 # We assume the secret contains the necessary LETTERFEED_* variables.
 OLD_KEY=""
 if [ -f .env ]; then
-  OLD_KEY=$(grep "LETTERFEED_SECRET_KEY" .env | cut -d'=' -f2-)
+  OLD_KEY=$(grep -E '^LETTERFEED_SECRET_KEY=' .env | tail -n1 | cut -d'=' -f2- || true)
 fi
 
-gcloud secrets versions access latest --secret="letterfeed-env" > .env
+(
+  umask 077
+  gcloud secrets versions access latest --secret="letterfeed-env" > .env
 
-# Restore or generate the secret key if not provided in the secret
-if ! grep -q "LETTERFEED_SECRET_KEY" .env; then
-  if [ -n "$OLD_KEY" ]; then
-    echo "LETTERFEED_SECRET_KEY=$OLD_KEY" >> .env
-  else
-    SECRET=$(openssl rand -hex 32 2>/dev/null || python3 -c 'import secrets; print(secrets.token_hex(32))')
-    echo "LETTERFEED_SECRET_KEY=$SECRET" >> .env
+  # Ensure .env ends with a newline before appending entries
+  if [ -s .env ] && [ -n "$(tail -c1 .env)" ]; then
+    echo "" >> .env
   fi
-fi
 
-# Ensure frontend uses the correct backend URL in Docker Compose
-echo "LETTERFEED_BACKEND_URL=http://backend:8000" >> .env
+  # Restore or generate the secret key if not provided in the secret
+  if ! grep -qE '^LETTERFEED_SECRET_KEY=.+' .env; then
+    if [ -n "$OLD_KEY" ]; then
+      echo "LETTERFEED_SECRET_KEY=$OLD_KEY" >> .env
+    else
+      SECRET=$(openssl rand -hex 32 2>/dev/null || python3 -c 'import secrets; print(secrets.token_hex(32))')
+      echo "LETTERFEED_SECRET_KEY=$SECRET" >> .env
+    fi
+  fi
+
+  # Ensure frontend uses the correct backend URL in Docker Compose
+  echo "LETTERFEED_BACKEND_URL=http://backend:8000" >> .env
+)
+chmod 600 .env
 
 # Force pull the latest production docker images (to bypass local cached images)
 docker compose pull

@@ -12,13 +12,12 @@ repos:
       - id: check-added-large-files
         exclude: ^backend/alembic/
 
-# Backend (Python) specific hooks
+  # Backend (Python) specific hooks
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.12.3
-
+    rev: v0.16.7
     hooks:
       - id: ruff-check
-        args: [ --fix, --config, backend/pyproject.toml]
+        args: [--fix, --config, backend/pyproject.toml]
         files: ^backend/
       - id: ruff-format
         args: [--config, backend/pyproject.toml]
