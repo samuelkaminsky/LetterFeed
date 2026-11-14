@@ -1,13 +1,6 @@
 .DEFAULT_GOAL := help
 
 # ==============================================================================
-# Variables
-# ==============================================================================
-
-# Get the directory of the Makefile
-MAKEFILE_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
-
-# ==============================================================================
 # Help
 # ==============================================================================
 
@@ -20,7 +13,7 @@ help:
 	@echo "  dev                         Start the development servers for frontend and backend"
 	@echo "  test                        Run tests for frontend and backend"
 	@echo "  lint                        Lint the frontend and backend code"
-	@echo "  docker-build                Build the production Docker images"
+	@echo "  docker-build                Build the development Docker images"
 	@echo "  docker-up                   Start the production application with Docker Compose"
 	@echo "  docker-down                 Stop the production application"
 	@echo "  docker-dev-up               Start the development environment with Docker Compose"
@@ -38,20 +31,26 @@ install: install-backend install-frontend ## Install all dependencies
 .PHONY: install-backend
 install-backend:
 	@echo ">>> Installing backend dependencies..."
-	@cd backend && uv sync --all-extras
+	@cd backend && uv sync --group test
 
 .PHONY: install-frontend
 install-frontend:
 	@echo ">>> Installing frontend dependencies..."
-	@cd frontend && npm install
+	@cd frontend && npm ci
 
 .PHONY: dev
 dev: ## Start development servers
 	@echo ">>> Starting development servers..."
-	@echo ">>> Starting backend server..."
-	@bash -c 'set -a; source .env; set +a; cd backend && uv run uvicorn app.main:app --reload' &
-	@echo ">>> Starting frontend server..."
-	@bash -c 'set -a; source .env; set +a; cd frontend && npm run dev'
+	@bash -c 'set -e; \
+		if [ -f .env ]; then set -a; source .env; set +a; fi; \
+		echo ">>> Running database migrations..."; \
+		(cd backend && uv run alembic upgrade head); \
+		(trap '\''kill 0'\'' INT TERM EXIT; \
+		echo ">>> Starting backend server..."; \
+		(cd backend && uv run uvicorn app.main:app --reload) & \
+		echo ">>> Starting frontend server..."; \
+		(cd frontend && npm run dev) & \
+		wait)'
 
 .PHONY: test
 test: test-backend test-frontend ## Run all tests
@@ -72,7 +71,7 @@ lint: lint-backend lint-frontend ## Lint all code
 .PHONY: lint-backend
 lint-backend:
 	@echo ">>> Linting backend code..."
-	@cd backend && uv run ruff check .
+	@cd backend && uv run ruff check . && uv run ruff format --check .
 
 .PHONY: lint-frontend
 lint-frontend:
@@ -85,9 +84,9 @@ lint-frontend:
 # ==============================================================================
 
 .PHONY: docker-build
-docker-build: ## Build production Docker images
-	@echo ">>> Building production Docker images..."
-	@docker compose build
+docker-build: ## Build development Docker images
+	@echo ">>> Building development Docker images..."
+	@docker compose -f docker-compose.dev.yml build
 
 .PHONY: docker-up
 docker-up: ## Start production application

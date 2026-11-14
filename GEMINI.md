@@ -1,7 +1,7 @@
 ## Gemini Added Memories
 - ./backend contains the FastAPI backend. It uses uv as package manager.
 - ./frontend contains the TS React frontend. It uses ShadCN components.
-- **Next.js React Compiler**: Enabling `experimental: { reactCompiler: true }` in `next.config.ts` requires `babel-plugin-react-compiler` to be installed in `package.json` to avoid production build failures.
+- **Next.js React Compiler**: Enabling `reactCompiler: true` in `next.config.ts` requires `babel-plugin-react-compiler` to be installed in `package.json` to avoid production build failures.
 - **Alembic Migrations**: When adding new database models or running `alembic revision --autogenerate`, ensure that the models are explicitly imported in `backend/alembic/env.py`. Failure to do so will result in Alembic thinking the tables were deleted and generating a migration that drops the entire database.
 
 ## Project Management Skill
@@ -12,10 +12,10 @@ When asked to manage the project, build, test, or run tasks, use the following s
 
 ### 1. Running the Project
 - **Local Development**: Run `make dev` to start the FastAPI backend and React frontend development servers concurrently.
-- **Docker Development**: Run `make docker-dev-up` to start the development environment using Docker Compose. Run `make docker-dev-down` to stop it.
+- **Docker Development**: Run `make docker-build` to build development Docker images, `make docker-dev-up` to start the development environment using Docker Compose, and `make docker-dev-down` to stop it.
 
 ### 2. Managing Dependencies
-- **Backend**: We use `uv`. To add a package, run `cd backend && uv add <package>`. To sync, run `cd backend && uv sync --all-extras` (or `make install-backend`).
+- **Backend**: We use `uv`. To add a package, run `cd backend && uv add <package>`. To sync, run `cd backend && uv sync --group test` (or `make install-backend`).
 - **Frontend**: We use `npm`. To add a package, run `cd frontend && npm install <package>`. To install all, run `make install-frontend`.
 - **Full Install**: Run `make install` to install all dependencies for both frontend and backend.
 
@@ -33,9 +33,8 @@ We use SQLAlchemy and Alembic for the backend.
 The project is deployed using GitHub Actions and GCP:
 - **CI/CD Pipeline**: Pushing to the `master` branch or creating a release triggers GitHub Actions (`.github/workflows/ci.yml`) to run linting and tests. It also builds and pushes Docker images to GitHub Container Registry (`ghcr.io/samuelkaminsky/letterfeed-backend` and `ghcr.io/samuelkaminsky/letterfeed-frontend`).
 - **Server Deployment**: A GCP Compute Engine instance uses `startup.sh` to set up the environment. It clones the repository into `/opt/letterfeed`, fetches the `.env` file from Google Secret Manager (`letterfeed-env`), and starts the production application using `docker compose up -d`.
-- **Continuous Deployment (Watchtower)**: The production `docker-compose.yml` includes a Watchtower service that polls the GitHub Container Registry every 5 minutes (`--interval 300`). When it detects updated images pushed by the CI/CD pipeline, it automatically pulls them, gracefully restarts the affected containers, and cleans up old images (`--cleanup`), enabling a zero-touch continuous deployment loop.
+- **Continuous Deployment (Watchtower)**: The production `docker-compose.yml` includes a Watchtower service (`nickfedor/watchtower`) that polls the GitHub Container Registry every 5 minutes (`--interval 300`). When it detects updated images pushed by the CI/CD pipeline, it automatically pulls them, gracefully restarts the affected containers, and cleans up old images (`--cleanup`), enabling a zero-touch continuous deployment loop.
 - **Manual Production Docker**: If running or testing production manually, you can use:
-  - **Build**: `make docker-build`
   - **Start**: `make docker-up`
   - **Stop**: `make docker-down`
 

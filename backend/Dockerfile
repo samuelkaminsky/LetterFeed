@@ -2,19 +2,26 @@ FROM python:3.13-alpine AS base
 
 FROM base AS builder
 
-COPY --from=ghcr.io/astral-sh/uv:0.7.20 /uv /bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.11.12 /uv /bin/uv
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
 
 WORKDIR /app
-COPY ./alembic.ini ./pyproject.toml ./uv.lock ./
+COPY ./pyproject.toml ./uv.lock ./
+
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --no-install-project
+
+COPY ./alembic.ini ./
 COPY ./alembic ./alembic
 COPY ./app ./app
 
-RUN --mount=type=cache,target=/root/.cache/uv     uv sync --frozen
-
 FROM base
-COPY --from=builder /app /app
+
+RUN addgroup -S letterfeed && adduser -S -G letterfeed letterfeed \
+    && mkdir -p /data && chown letterfeed:letterfeed /data
+
 WORKDIR /app
+COPY --from=builder --chown=letterfeed:letterfeed /app /app
 
 EXPOSE 8000
 
@@ -24,4 +31,7 @@ ENV LETTERFEED_GIT_SHA=$GIT_SHA
 
 ENV LETTERFEED_PRODUCTION=true
 ENV PATH="/app/.venv/bin:$PATH"
+
+USER letterfeed
+
 CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]

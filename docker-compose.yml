@@ -18,6 +18,8 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      LETTERFEED_BACKEND_URL: ${LETTERFEED_BACKEND_URL:-http://backend:8000}
     ports:
       - "3000:3000"
     depends_on:
@@ -30,12 +32,10 @@ services:
           memory: 200M
 
   watchtower:
-    image: containrrr/watchtower:latest
+    image: nickfedor/watchtower:latest
     restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-    environment:
-      - DOCKER_API_VERSION=1.40
     command: --interval 300 --cleanup
     networks:
       - letterfeed_network
