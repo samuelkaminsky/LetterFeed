@@ -1,3 +1,4 @@
+import gzip
 import hashlib
 import threading
 from collections import OrderedDict
@@ -37,9 +38,34 @@ def _store_in_memory_cache(feed_id: str, etag: str, content_str: str) -> None:
     """Store a feed entry in the bounded LRU memory cache under lock."""
     with _feed_memory_cache_lock:
         _feed_memory_cache[feed_id] = (etag, content_str)
+        _feed_gzip_cache.pop(feed_id, None)
         _feed_memory_cache.move_to_end(feed_id)
         while len(_feed_memory_cache) > _FEED_MEMORY_CACHE_MAX:
             _feed_memory_cache.popitem(last=False)
+
+
+# Pre-compressed feed bodies: feed_id -> (etag, gzip_bytes). Compressing once per
+# ETag avoids re-gzipping a multi-MB feed (GZipMiddleware, level 9) on every full
+# response. Bounded by the same LRU size as the content cache.
+_feed_gzip_cache: OrderedDict[str, tuple[str, bytes]] = OrderedDict()
+
+
+def get_gzipped_feed(feed_id: str, etag: str, content: bytes | str) -> bytes:
+    """Return the gzip-compressed feed body, compressing at most once per ETag."""
+    with _feed_memory_cache_lock:
+        cached = _feed_gzip_cache.get(feed_id)
+        if cached and cached[0] == etag:
+            _feed_gzip_cache.move_to_end(feed_id)
+            return cached[1]
+
+    content_bytes = content.encode("utf-8") if isinstance(content, str) else content
+    compressed = gzip.compress(content_bytes, compresslevel=6)
+    with _feed_memory_cache_lock:
+        _feed_gzip_cache[feed_id] = (etag, compressed)
+        _feed_gzip_cache.move_to_end(feed_id)
+        while len(_feed_gzip_cache) > _FEED_MEMORY_CACHE_MAX:
+            _feed_gzip_cache.popitem(last=False)
+    return compressed
 
 
 def get_cached_feed(db: Session, feed_id: str, current_etag: str) -> str | None:
@@ -103,5 +129,6 @@ def delete_cached_feed(db: Session, feed_id: str) -> None:
     logger.info(f"Invalidating cache for feed_id={feed_id}")
     with _feed_memory_cache_lock:
         _feed_memory_cache.pop(feed_id, None)
+        _feed_gzip_cache.pop(feed_id, None)
     db.query(FeedCache).filter(FeedCache.feed_id == feed_id).delete()
     db.commit()
