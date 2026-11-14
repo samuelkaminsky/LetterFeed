@@ -1,8 +1,11 @@
 from unittest.mock import patch
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
+from app.core.auth import clear_auth_credentials_cache
+from app.core.encryption import encrypt_string
 from app.crud.settings import create_or_update_settings
 from app.schemas.settings import SettingsCreate
 
@@ -11,7 +14,7 @@ def test_auth_status_disabled(client: TestClient):
     """Test auth status when auth is disabled."""
     response = client.get("/auth/status")
     assert response.status_code == 200
-    assert response.json() == {"auth_enabled": False}
+    assert response.json() == {"auth_enabled": False, "authenticated": True}
 
 
 def test_auth_status_enabled(client: TestClient, db_session: Session):
@@ -27,7 +30,7 @@ def test_auth_status_enabled(client: TestClient, db_session: Session):
 
     response = client.get("/auth/status")
     assert response.status_code == 200
-    assert response.json() == {"auth_enabled": True}
+    assert response.json() == {"auth_enabled": True, "authenticated": False}
 
 
 def test_login_endpoint(client: TestClient, db_session: Session):
@@ -181,7 +184,16 @@ def test_auth_with_env_vars(client: TestClient):
 
         response = client.get("/auth/status")
         assert response.status_code == 200
-        assert response.json() == {"auth_enabled": True}
+        assert response.json() == {"auth_enabled": True, "authenticated": True}
+
+        client.cookies.clear()
+        response = client.get("/auth/status")
+        assert response.status_code == 200
+        assert response.json() == {"auth_enabled": True, "authenticated": False}
+
+        response = client.get("/auth/status", headers=headers)
+        assert response.status_code == 200
+        assert response.json() == {"auth_enabled": True, "authenticated": True}
 
 
 def test_login_sets_cookie(client: TestClient, db_session: Session):
@@ -268,3 +280,104 @@ def test_verify_auth_endpoint(client: TestClient, db_session: Session):
     assert response.status_code == 200
     assert response.json()["authenticated"] is True
     assert response.json()["username"] == "admin"
+
+
+def test_auth_status_authenticated_with_bearer_and_cookie(
+    client: TestClient, db_session: Session
+):
+    """Test /auth/status reflects valid Bearer header, valid cookie, and invalid token."""
+    create_or_update_settings(
+        db_session,
+        SettingsCreate(
+            imap_server="test.com",
+            imap_username="test",
+            imap_password="password",
+            auth_username="admin",
+            auth_password="password",
+        ),
+    )
+
+    assert client.get("/auth/status").json() == {
+        "auth_enabled": True,
+        "authenticated": False,
+    }
+    assert client.get(
+        "/auth/status", headers={"Authorization": "Bearer invalid"}
+    ).json() == {"auth_enabled": True, "authenticated": False}
+
+    login_res = client.post(
+        "/auth/login", data={"username": "admin", "password": "password"}
+    )
+    assert login_res.status_code == 200
+    token = login_res.json()["access_token"]
+
+    # Cookie-authenticated check
+    assert client.get("/auth/status").json() == {
+        "auth_enabled": True,
+        "authenticated": True,
+    }
+
+    # Clear cookies and authenticate solely via Bearer header
+    client.cookies.clear()
+    assert client.get("/auth/status").json() == {
+        "auth_enabled": True,
+        "authenticated": False,
+    }
+    assert client.get(
+        "/auth/status", headers={"Authorization": f"Bearer {token}"}
+    ).json() == {"auth_enabled": True, "authenticated": True}
+
+
+def test_auth_status_production_without_auth_configured(client: TestClient):
+    """In production with no auth configured, /auth/status reports unauthenticated."""
+    with patch("app.core.auth.env_settings") as mock_env_settings:
+        mock_env_settings.auth_username = None
+        mock_env_settings.auth_password = None
+        mock_env_settings.production = True
+        mock_env_settings.secret_key = "testsecret"
+        mock_env_settings.algorithm = "HS256"
+
+        response = client.get("/auth/status")
+        assert response.status_code == 200
+        assert response.json() == {"auth_enabled": False, "authenticated": False}
+
+
+def test_login_rate_limiting_and_reset(client: TestClient, db_session: Session):
+    """After 10 failed login attempts, further attempts are rejected with HTTP 429."""
+    create_or_update_settings(
+        db_session,
+        SettingsCreate(
+            imap_server="test.com",
+            imap_username="test",
+            imap_password="password",
+            auth_username="admin",
+            auth_password="password",
+        ),
+    )
+
+    for _ in range(10):
+        res = client.post(
+            "/auth/login", data={"username": "admin", "password": "wrong"}
+        )
+        assert res.status_code == 401
+
+    blocked = client.post(
+        "/auth/login", data={"username": "admin", "password": "password"}
+    )
+    assert blocked.status_code == 429
+    assert "Retry-After" in blocked.headers
+
+    clear_auth_credentials_cache()
+    recovered = client.post(
+        "/auth/login", data={"username": "admin", "password": "password"}
+    )
+    assert recovered.status_code == 200
+
+
+def test_encrypt_string_fails_closed_in_production_without_secret_key():
+    """encrypt_string raises instead of returning plaintext when secret_key is missing in production."""
+    with patch("app.core.encryption.settings") as mock_settings:
+        mock_settings.production = True
+        mock_settings.secret_key = ""
+        with pytest.raises(ValueError):
+            encrypt_string("super-secret-imap-password")

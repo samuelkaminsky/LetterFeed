@@ -21,7 +21,7 @@ from app.core.config import settings as app_settings
 
 # Import models so they are registered with Base.metadata
 from app.models.entries import Entry
-from app.models.newsletters import Newsletter
+from app.models.newsletters import Newsletter, Sender
 from app.models.settings import Settings
 from app.models.feed_cache import FeedCache
 
@@ -51,6 +51,7 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
+        render_as_batch=True,
     )
 
     with context.begin_transaction():
@@ -73,7 +74,11 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
-        context.configure(connection=connection, target_metadata=target_metadata)
+        context.configure(
+            connection=connection,
+            target_metadata=target_metadata,
+            render_as_batch=True,
+        )
 
         with context.begin_transaction():
             context.run_migrations()

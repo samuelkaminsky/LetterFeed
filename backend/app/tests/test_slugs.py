@@ -120,3 +120,76 @@ def test_update_newsletter_with_conflicting_slug(
     response = client.put(f"/newsletters/{newsletter1_id}", json=update_data)
     assert response.status_code == 409
     assert response.json()["detail"] == "Slug already in use"
+
+
+@pytest.mark.parametrize("bad_slug", ["all", "  ALL  ", "_all_"])
+def test_reject_reserved_slug_all(client: TestClient, bad_slug: str):
+    """Creating or updating a newsletter with reserved slug 'all' returns 422."""
+    create_res = client.post(
+        "/newsletters",
+        json={
+            "name": "Reserved Slug NL",
+            "slug": bad_slug,
+            "sender_emails": ["reserved@test.com"],
+        },
+    )
+    assert create_res.status_code == 422
+
+    ok_res = client.post(
+        "/newsletters",
+        json={
+            "name": "Valid NL",
+            "slug": "valid-slug",
+            "sender_emails": ["valid@test.com"],
+        },
+    )
+    assert ok_res.status_code == 200
+    nl_id = ok_res.json()["id"]
+
+    update_res = client.put(
+        f"/newsletters/{nl_id}",
+        json={
+            "name": "Valid NL",
+            "slug": bad_slug,
+            "sender_emails": ["valid@test.com"],
+        },
+    )
+    assert update_res.status_code == 422
+
+
+def test_slug_based_entry_create_and_delete_clears_cache(client: TestClient):
+    """Creating an entry and deleting a newsletter by slug invalidates the ID-keyed feed cache."""
+    create_res = client.post(
+        "/newsletters",
+        json={
+            "name": "Slug Cache NL",
+            "slug": "my-feed",
+            "sender_emails": ["slugcache@test.com"],
+        },
+    )
+    assert create_res.status_code == 200
+
+    # Warm the feed cache before adding an entry
+    feed_before = client.get("/feeds/my-feed")
+    assert feed_before.status_code == 200
+    assert feed_before.text.count("<entry>") == 0
+
+    entry_res = client.post(
+        "/newsletters/my-feed/entries",
+        json={
+            "subject": "Slug Entry",
+            "body": "<p>Hello via slug</p>",
+            "message_id": "<slug-entry-1@test.com>",
+        },
+    )
+    assert entry_res.status_code == 200
+
+    feed_after_entry = client.get("/feeds/my-feed")
+    assert feed_after_entry.status_code == 200
+    assert feed_after_entry.text.count("<entry>") == 1
+
+    delete_res = client.delete("/newsletters/my-feed")
+    assert delete_res.status_code == 200
+
+    feed_after_delete = client.get("/feeds/my-feed")
+    assert feed_after_delete.status_code == 404

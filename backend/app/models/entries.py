@@ -19,8 +19,8 @@ class Entry(Base):
 
     __tablename__ = "entries"
 
-    id = Column(String, primary_key=True, index=True)
-    newsletter_id = Column(String, ForeignKey("newsletters.id"))
+    id = Column(String, primary_key=True)
+    newsletter_id = Column(String, ForeignKey("newsletters.id", ondelete="CASCADE"))
     subject = Column(String)
     body = Column(Text)
     received_at = Column(

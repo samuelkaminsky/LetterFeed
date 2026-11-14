@@ -29,13 +29,19 @@ ALLOWED_ATTRIBUTES = {
 }
 
 
+# We keep tab (\x09), newline (\x0a), and carriage return (\x0d).
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def strip_control_chars(value: str) -> str:
+    """Remove NULL bytes and control characters that can cause XML/HTML parsers to fail."""
+    return _CONTROL_CHARS_RE.sub("", value)
+
+
 def sanitize_html(raw_html_content: str | None) -> str:
-    """Decode, strip control chars, and sanitize HTML to the allowlist."""
+    """Strip control chars and sanitize HTML to the allowlist."""
     if not raw_html_content:
         return ""
 
-    # Remove NULL bytes and other control characters that can cause lxml/nh3 to fail.
-    # We keep tab (\x09), newline (\x0a), and carriage return (\x0d)
-    clean_html_str = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", raw_html_content)
-
+    clean_html_str = strip_control_chars(raw_html_content)
     return nh3.clean(clean_html_str, tags=ALLOWED_TAGS, attributes=ALLOWED_ATTRIBUTES)

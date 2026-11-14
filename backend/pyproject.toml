@@ -2,21 +2,20 @@
 name = "letterfeed-backend"
 version = "0.4.0"
 description = "Backend for LetterFeed"
-readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "alembic>=1.16.4",
     "apscheduler>=3.11.0",
     "bcrypt>=5.0.0",
     "beautifulsoup4>=4.13.4",
+    "cryptography>=45.0.0",
     "fastapi>=0.116.0",
     "feedgen>=1.0.0",
     "nanoid>=2.0.0",
     "nh3>=0.3.0",
     "pydantic-settings>=2.10.1",
     "pydantic[email]>=2.11.7",
-    "python-dotenv>=1.1.1",
-    "python-jose[cryptography]>=3.5.0",
+    "pyjwt>=2.10.1",
     "python-multipart>=0.0.20",
     "readability-lxml>=0.8.4.1",
     "sqlalchemy>=2.0.41",
@@ -45,7 +44,7 @@ lint.ignore = [
     "E501",
 ]
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["D", "UP"]
+"app/tests/*" = ["D", "UP"]
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 

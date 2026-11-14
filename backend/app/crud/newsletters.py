@@ -1,5 +1,6 @@
 import threading
 from collections import OrderedDict
+from typing import Literal
 
 from nanoid import generate
 from sqlalchemy import func, or_
@@ -14,7 +15,7 @@ from app.schemas.newsletters import NewsletterCreate, NewsletterUpdate
 logger = get_logger(__name__)
 
 
-def get_newsletter_by_identifier(db: Session, identifier: str):
+def get_newsletter_by_identifier(db: Session, identifier: str) -> Newsletter | None:
     """Retrieve a single newsletter by its ID or slug."""
     logger.debug(f"Querying for newsletter with identifier={identifier}")
     result = (
@@ -32,7 +33,7 @@ def get_newsletter_by_identifier(db: Session, identifier: str):
     return None
 
 
-def get_newsletter_by_slug(db: Session, slug: str):
+def get_newsletter_by_slug(db: Session, slug: str) -> Newsletter | None:
     """Retrieve a newsletter by its slug."""
     return db.query(Newsletter).filter(Newsletter.slug == slug).first()
 
@@ -107,19 +108,22 @@ def clear_identity_cache() -> None:
         _missing_identity_cache.clear()
 
 
-def get_newsletters(db: Session, skip: int = 0, limit: int = 100):
-    """Retrieve a list of newsletters."""
+def get_newsletters(
+    db: Session, skip: int = 0, limit: int | None = None
+) -> list[Newsletter]:
+    """Retrieve a list of newsletters with entry counts."""
     logger.debug(f"Querying for newsletters with skip={skip}, limit={limit}")
-    results = (
+    query = (
         db.query(Newsletter, func.count(Entry.id))
         .outerjoin(Entry, Newsletter.id == Entry.newsletter_id)
         .group_by(Newsletter.id)
         .order_by(Newsletter.id)
         .options(selectinload(Newsletter.senders))
         .offset(skip)
-        .limit(limit)
-        .all()
     )
+    if limit is not None:
+        query = query.limit(limit)
+    results = query.all()
 
     newsletters_with_count = []
     for newsletter, count in results:
@@ -129,7 +133,17 @@ def get_newsletters(db: Session, skip: int = 0, limit: int = 100):
     return newsletters_with_count
 
 
-def create_newsletter(db: Session, newsletter: NewsletterCreate):
+def get_all_newsletters_for_processing(db: Session) -> list[Newsletter]:
+    """Retrieve all newsletters with senders loaded without entry-count aggregation."""
+    return (
+        db.query(Newsletter)
+        .order_by(Newsletter.id)
+        .options(selectinload(Newsletter.senders))
+        .all()
+    )
+
+
+def create_newsletter(db: Session, newsletter: NewsletterCreate) -> Newsletter | None:
     """Create a new newsletter."""
     logger.info(f"Creating new newsletter with name '{newsletter.name}'")
 
@@ -142,16 +156,16 @@ def create_newsletter(db: Session, newsletter: NewsletterCreate):
             name=newsletter.name,
             slug=newsletter.slug,
             search_folder=newsletter.search_folder,
+            is_active=newsletter.is_active,
             extract_content=newsletter.extract_content,
             move_to_folder=newsletter.move_to_folder,
         )
         db.add(db_newsletter)
-        db.commit()
-        db.refresh(db_newsletter)
+        db.flush()
 
         for email in newsletter.sender_emails:
             db_sender = Sender(
-                id=generate(), email=email, newsletter_id=db_newsletter.id
+                id=generate(), email=email.lower(), newsletter_id=db_newsletter.id
             )
             db.add(db_sender)
 
@@ -171,7 +185,7 @@ def create_newsletter(db: Session, newsletter: NewsletterCreate):
 
 def update_newsletter(
     db: Session, newsletter_id: str, newsletter_update: NewsletterUpdate
-):
+) -> Newsletter | Literal["conflict"] | None:
     """Update an existing newsletter."""
     logger.info(f"Updating newsletter with id={newsletter_id}")
     db_newsletter = db.query(Newsletter).filter(Newsletter.id == newsletter_id).first()
@@ -190,22 +204,33 @@ def update_newsletter(
                 continue
             setattr(db_newsletter, key, value)
 
-        # More efficient sender update
-        existing_emails = {sender.email for sender in db_newsletter.senders}
-        new_emails = set(newsletter_update.sender_emails)
+        new_emails_lower = {email.lower() for email in newsletter_update.sender_emails}
+        existing_emails_lower: set[str] = set()
 
-        # Remove senders that are no longer in the list
-        for sender in db_newsletter.senders:
-            if sender.email not in new_emails:
+        # Remove senders that are no longer in the list (matched case-insensitively)
+        for sender in list(db_newsletter.senders):
+            sender_lower = sender.email.lower()
+            if (
+                sender_lower not in new_emails_lower
+                or sender_lower in existing_emails_lower
+            ):
                 db.delete(sender)
+            else:
+                if sender.email != sender_lower:
+                    sender.email = sender_lower
+                existing_emails_lower.add(sender_lower)
+
+        db.flush()
 
         # Add new senders
-        for email in new_emails:
-            if email not in existing_emails:
+        for email in newsletter_update.sender_emails:
+            email_lower = email.lower()
+            if email_lower not in existing_emails_lower:
                 db_sender = Sender(
-                    id=generate(), email=email, newsletter_id=db_newsletter.id
+                    id=generate(), email=email_lower, newsletter_id=db_newsletter.id
                 )
                 db.add(db_sender)
+                existing_emails_lower.add(email_lower)
 
         db.commit()
         db.refresh(db_newsletter)
@@ -220,7 +245,7 @@ def update_newsletter(
     return get_newsletter_by_identifier(db, newsletter_id)
 
 
-def delete_newsletter(db: Session, newsletter_id: str):
+def delete_newsletter(db: Session, newsletter_id: str) -> Newsletter | None:
     """Delete a newsletter by its ID."""
     logger.info(f"Deleting newsletter with id={newsletter_id}")
     db_newsletter = get_newsletter_by_identifier(db, newsletter_id)

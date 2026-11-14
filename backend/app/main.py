@@ -1,8 +1,10 @@
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from sqlalchemy.engine import make_url
 
 from app.core.auth import protected_route
 from app.core.config import settings
@@ -13,13 +15,21 @@ from app.crud.settings import create_initial_settings
 from app.routers import auth, feeds, health, imap, newsletters
 
 
+def _safe_database_url(database_url: str) -> str:
+    """Return a database URL string with any password credentials redacted."""
+    try:
+        return make_url(database_url).render_as_string(hide_password=True)
+    except Exception:
+        return "<invalid database URL>"
+
+
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Handle application startup and shutdown events."""
     setup_logging()
     logger = get_logger(__name__)
 
-    logger.info(f"DATABASE_URL used: {settings.database_url}")
+    logger.info(f"DATABASE_URL used: {_safe_database_url(settings.database_url)}")
     logger.info("Starting up Letterfeed backend...")
     logger.warning(
         "Letterfeed uses process-local memory caches for performance. Running multiple uvicorn "

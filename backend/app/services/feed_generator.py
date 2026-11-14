@@ -1,12 +1,11 @@
 from datetime import UTC, datetime
-from typing import List
 from urllib.parse import urlsplit
 
-from dateutil import tz
 from fastapi import Request
 from feedgen.feed import FeedGenerator
 from sqlalchemy.orm import Session
 
+from app.core.auth import is_auth_enabled
 from app.core.config import settings
 from app.crud.entries import get_all_entries, get_entries_by_newsletter
 from app.crud.newsletters import get_newsletter_by_identifier
@@ -85,8 +84,8 @@ def _create_feed_generator(
 
 
 def _add_entries_to_feed(
-    fg: FeedGenerator, entries: List[Entry], is_master_feed: bool = False
-):
+    fg: FeedGenerator, entries: list[Entry], is_master_feed: bool = False
+) -> None:
     """Add a list of entries to a FeedGenerator instance."""
     for entry in entries:
         fe = fg.add_entry()
@@ -103,7 +102,7 @@ def _add_entries_to_feed(
             received_at = datetime.now(UTC)
 
         if received_at.tzinfo is None:
-            timezone_aware_received_at = received_at.replace(tzinfo=tz.tzutc())
+            timezone_aware_received_at = received_at.replace(tzinfo=UTC)
             fe.published(timezone_aware_received_at)
             fe.updated(timezone_aware_received_at)
         else:
@@ -117,7 +116,7 @@ def generate_feed(
     base_url: str | None = None,
     request: Request | None = None,
     limit: int | None = None,
-):
+) -> bytes | None:
     """Generate an Atom feed for a given newsletter."""
     newsletter = get_newsletter_by_identifier(db, feed_identifier)
     if not newsletter:
@@ -126,7 +125,10 @@ def generate_feed(
     entries = get_entries_by_newsletter(db, newsletter.id, limit=limit)
 
     url = _get_base_url(request, base_url)
-    feed_url = f"{url}/api/feeds/{newsletter.slug or newsletter.id}"
+    feed_path_id = (
+        newsletter.id if is_auth_enabled(db) else (newsletter.slug or newsletter.id)
+    )
+    feed_url = f"{url}/api/feeds/{feed_path_id}"
     sender_emails = ", ".join([s.email for s in newsletter.senders])
     description = f"A feed of newsletters from {sender_emails}"
 

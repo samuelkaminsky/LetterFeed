@@ -1,10 +1,10 @@
+"""Logging configuration for the application."""
+
 import logging
 from logging.config import dictConfig
 
-"""Logging configuration for the application."""
 
-
-def setup_logging():
+def setup_logging() -> None:
     """Set up the logging configuration for the application."""
     log_config = {
         "version": 1,
@@ -26,7 +26,7 @@ def setup_logging():
             "app": {
                 "handlers": ["default"],
                 "level": "INFO",
-                "propagate": True,
+                "propagate": False,
             },
             "uvicorn": {
                 "handlers": ["default"],
@@ -46,6 +46,6 @@ def setup_logging():
     dictConfig(log_config)
 
 
-def get_logger(name: str):
+def get_logger(name: str) -> logging.Logger:
     """Return a logger instance with the given name."""
     return logging.getLogger(name)

@@ -1,4 +1,6 @@
-from datetime import datetime
+"""Scheduler for background tasks like email processing."""
+
+from datetime import UTC, datetime
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -7,12 +9,10 @@ from app.core.logging import get_logger
 from app.crud.settings import get_settings
 from app.services.email_processor import ProcessingInProgressError, process_emails
 
-"""Scheduler for background tasks like email processing."""
-
 logger = get_logger(__name__)
 
 
-def job():
+def job() -> None:
     """Process emails as a scheduled job."""
     logger.info("Scheduler job starting: process_emails")
     db = SessionLocal()
@@ -30,7 +30,7 @@ def job():
 scheduler = BackgroundScheduler()
 
 
-def start_scheduler_with_interval():
+def start_scheduler_with_interval() -> None:
     """Start the scheduler with an interval based on application settings."""
     logger.info("Attempting to start scheduler...")
     db = SessionLocal()
@@ -52,7 +52,7 @@ def start_scheduler_with_interval():
             scheduler.add_job(
                 job,
                 "date",
-                run_date=datetime.now(),
+                run_date=datetime.now(UTC),
                 id="initial_email_check",
                 replace_existing=True,
             )

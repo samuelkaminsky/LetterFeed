@@ -394,7 +394,10 @@ def test_auto_add_does_not_duplicate_sender_differing_only_by_case(
         [(None, b"From: other@example.com\nSubject: Hi\nMessage-ID: <e@f>\n\nBody")],
     )
 
-    with patch("app.services.email_processor.get_newsletters", return_value=[]):
+    with patch(
+        "app.services.email_processor.get_all_newsletters_for_processing",
+        return_value=[],
+    ):
         # Simulate the sender_map missing this sender so the auto-add path runs.
         process_emails(db_session)
 

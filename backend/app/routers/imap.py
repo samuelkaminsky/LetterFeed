@@ -114,4 +114,7 @@ def trigger_email_processing(db: Session = Depends(get_db)):
         raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:
         logger.error(f"Error triggering email processing: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail="Internal server error during email processing.",
+        )

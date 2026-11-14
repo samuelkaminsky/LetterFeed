@@ -429,3 +429,53 @@ def test_purge_old_entries_invalidates_etag(
     assert res.status_code == 200, "purged feed still reported Not Modified"
     assert res.headers["ETag"] != etag_before
     assert res.text.count("<entry>") == 1
+
+
+def test_feed_headers_private_and_id_self_link_when_auth_enabled(
+    client: TestClient, db_session: Session
+):
+    """When auth is enabled, feed headers are private and self-links use newsletter ID."""
+    from app.crud.settings import create_or_update_settings
+    from app.schemas.settings import SettingsCreate
+
+    create_res = client.post(
+        "/newsletters",
+        json={
+            "name": "Private NL",
+            "slug": "secret-slug",
+            "sender_emails": [f"private_{uuid.uuid4()}@example.com"],
+        },
+    )
+    assert create_res.status_code == 200
+    newsletter_id = create_res.json()["id"]
+
+    entry_res = client.post(
+        f"/newsletters/{newsletter_id}/entries",
+        json={
+            "subject": "Private Entry",
+            "body": "<p>Secret content</p>",
+            "message_id": f"<private_{uuid.uuid4()}@test.com>",
+        },
+    )
+    assert entry_res.status_code == 200
+
+    settings = create_or_update_settings(
+        db_session,
+        SettingsCreate(
+            imap_server="imap.test.com",
+            imap_username="user",
+            imap_password="pw",
+            auth_username="admin",
+            auth_password="password",
+        ),
+    )
+
+    feed_res = client.get(f"/feeds/{newsletter_id}")
+    assert feed_res.status_code == 200
+    assert feed_res.headers["Cache-Control"].startswith("private,")
+    assert f"/api/feeds/{newsletter_id}" in feed_res.text
+    assert "/api/feeds/secret-slug" not in feed_res.text
+
+    master_res = client.get(f"/feeds/all?token={settings.master_feed_token}")
+    assert master_res.status_code == 200
+    assert master_res.headers["Cache-Control"].startswith("private,")

@@ -3,6 +3,8 @@ import os
 os.environ["LETTERFEED_DATABASE_URL"] = "sqlite:///./test.db"
 os.environ["LETTERFEED_SECRET_KEY"] = "testsecret"
 
+from unittest.mock import patch
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import sessionmaker
@@ -61,7 +63,7 @@ def client_fixture(db_session):
         yield db_session
 
     app.dependency_overrides[get_db] = override_get_db
-    with TestClient(app) as client:
+    with patch("app.main.start_scheduler_with_interval"), TestClient(app) as client:
         yield client
     app.dependency_overrides.clear()
 

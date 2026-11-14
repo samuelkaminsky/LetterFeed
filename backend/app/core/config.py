@@ -1,7 +1,7 @@
+"""Configuration settings for the Letterfeed application."""
+
 from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
-"""Configuration settings for the Letterfeed application."""
 
 
 class Settings(BaseSettings):
@@ -12,12 +12,17 @@ class Settings(BaseSettings):
     )
 
     @model_validator(mode="after")
-    def validate_production_cors(self) -> "Settings":
-        """Validate that CORS_ORIGINS is configured when running in production."""
-        if self.production and not self.cors_origins.strip():
-            raise ValueError(
-                "CORS_ORIGINS (LETTERFEED_CORS_ORIGINS) must be set when running in PRODUCTION mode for security."
-            )
+    def validate_production_settings(self) -> "Settings":
+        """Validate security-critical settings when running in production."""
+        if self.production:
+            if not self.cors_origins.strip():
+                raise ValueError(
+                    "CORS_ORIGINS (LETTERFEED_CORS_ORIGINS) must be set when running in PRODUCTION mode for security."
+                )
+            if not (self.secret_key and self.secret_key.strip()):
+                raise ValueError(
+                    "SECRET_KEY (LETTERFEED_SECRET_KEY) must be set when running in PRODUCTION mode for security."
+                )
         return self
 
     production: bool = Field(

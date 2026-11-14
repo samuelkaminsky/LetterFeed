@@ -1,3 +1,5 @@
+"""Symmetric encryption utilities for stored sensitive settings."""
+
 import base64
 import hashlib
 
@@ -14,6 +16,12 @@ ENCRYPTION_PREFIX = "enc_fernet:"
 
 def _get_encryption_key() -> bytes:
     """Derive a 32-byte key for Fernet from the application's SECRET_KEY."""
+    if settings.production and not (
+        settings.secret_key and settings.secret_key.strip()
+    ):
+        raise ValueError(
+            "SECRET_KEY (LETTERFEED_SECRET_KEY) must be set when running in PRODUCTION mode."
+        )
     secret = settings.secret_key or "default_unsafe_development_key_for_letterfeed"
     # Ensure key is exactly 32-bytes and urlsafe base64 encoded
     hashed = hashlib.sha256(secret.encode()).digest()
@@ -40,8 +48,7 @@ def encrypt_string(value: str | None) -> str | None:
         return f"{ENCRYPTION_PREFIX}{encrypted_bytes.decode()}"
     except Exception as e:
         logger.error(f"Failed to encrypt string: {e}", exc_info=True)
-        # Fallback to returning original value to avoid breaking user flow in worst-case
-        return value
+        raise
 
 
 def decrypt_string(value: str | None) -> str | None:

@@ -1,9 +1,13 @@
+import secrets
+import threading
+
 from sqlalchemy.orm import Session
 
 from app.core.config import settings as env_settings
 from app.core.encryption import ENCRYPTION_PREFIX, decrypt_string, encrypt_string
 from app.core.hashing import get_password_hash
 from app.core.logging import get_logger
+from app.crud.entries import bump_metadata_version
 from app.models.settings import Settings as SettingsModel
 from app.schemas.settings import Settings as SettingsSchema
 from app.schemas.settings import SettingsCreate
@@ -11,7 +15,7 @@ from app.schemas.settings import SettingsCreate
 logger = get_logger(__name__)
 
 
-def create_initial_settings(db: Session):
+def create_initial_settings(db: Session) -> None:
     """Create initial settings in the database if they don't exist."""
     logger.debug("Checking for initial settings.")
     db_settings = db.query(SettingsModel).first()
@@ -22,7 +26,7 @@ def create_initial_settings(db: Session):
 
         # Get env settings, but only for fields that exist in the DB model
         model_fields = {c.name for c in SettingsModel.__table__.columns}
-        env_data_for_db = {
+        env_data_for_db: dict[str, object] = {
             k: v for k, v in env_settings.model_dump().items() if k in model_fields
         }
 
@@ -34,12 +38,9 @@ def create_initial_settings(db: Session):
             del env_data_for_db["auth_password"]
 
         # Encrypt the initial IMAP password if provided via environment
-        if "imap_password" in env_data_for_db and env_data_for_db["imap_password"]:
-            env_data_for_db["imap_password"] = encrypt_string(
-                env_data_for_db["imap_password"]
-            )
-
-        import secrets
+        raw_imap_password = env_data_for_db.get("imap_password")
+        if isinstance(raw_imap_password, str) and raw_imap_password:
+            env_data_for_db["imap_password"] = encrypt_string(raw_imap_password)
 
         env_data_for_db["master_feed_token"] = secrets.token_hex(16)
 
@@ -61,8 +62,6 @@ def _ensure_master_feed_token(db: Session, db_settings: SettingsModel) -> str | 
     if db_settings.master_feed_token:
         return db_settings.master_feed_token
     try:
-        import secrets
-
         db_settings.master_feed_token = secrets.token_hex(16)
         db.commit()
         db.refresh(db_settings)
@@ -146,26 +145,30 @@ def get_settings(db: Session, with_password: bool = False) -> SettingsSchema:
 # changes, but caching it keeps the secured master-feed 304 path free of DB
 # queries. Cleared on settings writes. Process-local; assumes a single worker.
 _master_feed_token_cache: dict[str, str | None] = {}
+_master_feed_token_cache_lock = threading.Lock()
 
 
 def get_master_feed_token(db: Session) -> str | None:
     """Return the master feed token, cached in memory."""
-    if "token" in _master_feed_token_cache:
-        return _master_feed_token_cache["token"]
+    with _master_feed_token_cache_lock:
+        if "token" in _master_feed_token_cache:
+            return _master_feed_token_cache["token"]
 
     db_settings = db.query(SettingsModel).first()
     token = _ensure_master_feed_token(db, db_settings) if db_settings else None
 
-    _master_feed_token_cache["token"] = token
+    with _master_feed_token_cache_lock:
+        _master_feed_token_cache["token"] = token
     return token
 
 
 def clear_master_feed_token_cache() -> None:
     """Invalidate the cached master feed token (call after a settings change)."""
-    _master_feed_token_cache.clear()
+    with _master_feed_token_cache_lock:
+        _master_feed_token_cache.clear()
 
 
-def create_or_update_settings(db: Session, settings: SettingsCreate):
+def create_or_update_settings(db: Session, settings: SettingsCreate) -> SettingsSchema:
     """Create or update application settings."""
     logger.info("Creating or updating settings")
     db_settings = db.query(SettingsModel).first()
@@ -180,15 +183,28 @@ def create_or_update_settings(db: Session, settings: SettingsCreate):
     locked_fields = list(env_settings.model_dump(exclude_unset=True).keys())
     logger.debug(f"Fields locked by environment variables: {locked_fields}")
 
+    clearing_auth_username = (
+        "auth_username" in update_data
+        and "auth_username" not in locked_fields
+        and not update_data["auth_username"]
+    )
+
     for key, value in update_data.items():
         if key in locked_fields:
             continue
 
-        if key == "auth_password":
-            if value:
-                db_settings.auth_password_hash = get_password_hash(value)
-            else:
+        if key == "auth_username":
+            if not value:
+                db_settings.auth_username = None
                 db_settings.auth_password_hash = None
+            else:
+                db_settings.auth_username = value
+        elif key == "auth_password":
+            # Only update the stored hash when a non-empty password is supplied;
+            # an empty/None auth_password preserves the existing password while
+            # auth_username remains set.
+            if value and not clearing_auth_username:
+                db_settings.auth_password_hash = get_password_hash(value)
         elif key == "imap_password":
             if value:  # Only update password if a new one is provided
                 setattr(db_settings, key, encrypt_string(value))
@@ -199,11 +215,12 @@ def create_or_update_settings(db: Session, settings: SettingsCreate):
     db.refresh(db_settings)
     logger.info("Successfully updated settings.")
 
-    # Auth username/password may have changed; drop the cached credentials.
+    # Auth username/password may have changed; drop cached credentials and bust feed ETags.
     from app.core.auth import clear_auth_credentials_cache
 
     clear_auth_credentials_cache()
     clear_master_feed_token_cache()
+    bump_metadata_version()
 
     # Return the updated settings including locked fields for a complete view
     return get_settings(db)

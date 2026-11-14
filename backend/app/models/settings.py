@@ -8,8 +8,8 @@ class Settings(Base):
 
     __tablename__ = "settings"
 
-    id = Column(Integer, primary_key=True, index=True)
-    imap_server = Column(String, index=True, nullable=True, default="")
+    id = Column(Integer, primary_key=True)
+    imap_server = Column(String, nullable=True, default="")
     imap_username = Column(String, nullable=True, default="")
     imap_password = Column(String, nullable=True)
     search_folder = Column(String, default="INBOX")

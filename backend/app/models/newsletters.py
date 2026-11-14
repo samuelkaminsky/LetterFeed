@@ -9,7 +9,7 @@ class Newsletter(Base):
 
     __tablename__ = "newsletters"
 
-    id = Column(String, primary_key=True, index=True)
+    id = Column(String, primary_key=True)
     slug = Column(String, unique=True, index=True, nullable=True)
     name = Column(String)
     search_folder = Column(String, nullable=True)
@@ -18,10 +18,16 @@ class Newsletter(Base):
     extract_content = Column(Boolean, default=False)
 
     senders = relationship(
-        "Sender", back_populates="newsletter", cascade="all, delete-orphan"
+        "Sender",
+        back_populates="newsletter",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
     )
     entries = relationship(
-        "Entry", back_populates="newsletter", cascade="all, delete-orphan"
+        "Entry",
+        back_populates="newsletter",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
     )
 
 
@@ -30,9 +36,11 @@ class Sender(Base):
 
     __tablename__ = "senders"
 
-    id = Column(String, primary_key=True, index=True)
+    id = Column(String, primary_key=True)
     email = Column(String, index=True, nullable=False)
-    newsletter_id = Column(String, ForeignKey("newsletters.id"), nullable=False)
+    newsletter_id = Column(
+        String, ForeignKey("newsletters.id", ondelete="CASCADE"), nullable=False
+    )
 
     newsletter = relationship("Newsletter", back_populates="senders")
 

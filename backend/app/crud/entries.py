@@ -1,4 +1,5 @@
 import secrets
+import threading
 from datetime import UTC, datetime, timedelta
 
 from nanoid import generate
@@ -6,6 +7,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.core.sanitization import sanitize_html
 from app.models.entries import Entry
 from app.schemas.entries import EntryCreate
 
@@ -19,7 +21,9 @@ def _retention_cutoff() -> datetime:
     )
 
 
-def get_all_entries(db: Session, skip: int = 0, limit: int | None = None):
+def get_all_entries(
+    db: Session, skip: int = 0, limit: int | None = None
+) -> list[Entry]:
     """Retrieve all entries from all newsletters, sorted by received date."""
     logger.debug(f"Querying all entries with skip={skip}, limit={limit}")
     query = (
@@ -40,7 +44,7 @@ def get_all_entries(db: Session, skip: int = 0, limit: int | None = None):
 
 def get_entries_by_newsletter(
     db: Session, newsletter_id: str, skip: int = 0, limit: int | None = None
-):
+) -> list[Entry]:
     """Retrieve entries for a specific newsletter."""
     logger.debug(
         f"Querying entries for newsletter_id={newsletter_id}, skip={skip}, limit={limit}"
@@ -62,7 +66,9 @@ def get_entries_by_newsletter(
     return query.all()
 
 
-def get_entry_by_message_id(db: Session, message_id: str, newsletter_id: str):
+def get_entry_by_message_id(
+    db: Session, message_id: str, newsletter_id: str
+) -> Entry | None:
     """Retrieve an entry by its message_id and newsletter_id."""
     logger.debug(
         f"Querying for entry with message_id={message_id} and newsletter_id={newsletter_id}"
@@ -75,7 +81,8 @@ def get_entry_by_message_id(db: Session, message_id: str, newsletter_id: str):
 
 
 # In-memory cache for the latest entry timestamps: feed_id or "master" -> datetime | None
-_latest_timestamp_cache = {}
+_latest_timestamp_cache: dict[str, datetime | None] = {}
+_latest_timestamp_cache_lock = threading.Lock()
 
 
 def get_latest_entry_timestamp(
@@ -94,17 +101,20 @@ def get_latest_entry_timestamp_cached(
 ) -> datetime | None:
     """Retrieve the timestamp of the latest entry, cached in memory."""
     cache_key = newsletter_id or "master"
-    if cache_key in _latest_timestamp_cache:
-        return _latest_timestamp_cache[cache_key]
+    with _latest_timestamp_cache_lock:
+        if cache_key in _latest_timestamp_cache:
+            return _latest_timestamp_cache[cache_key]
 
     val = get_latest_entry_timestamp(db, newsletter_id)
-    _latest_timestamp_cache[cache_key] = val
+    with _latest_timestamp_cache_lock:
+        _latest_timestamp_cache[cache_key] = val
     return val
 
 
-def clear_latest_timestamp_cache():
+def clear_latest_timestamp_cache() -> None:
     """Clear the in-memory cache of the latest entry timestamps."""
-    _latest_timestamp_cache.clear()
+    with _latest_timestamp_cache_lock:
+        _latest_timestamp_cache.clear()
 
 
 # Opaque token that changes whenever newsletter *metadata* (name, senders,
@@ -113,28 +123,37 @@ def clear_latest_timestamp_cache():
 # still produce a fresh ETag and bust cached feeds. Like the caches above, this
 # is process-local and assumes a single worker (see clear_latest_timestamp_cache).
 _metadata_version = secrets.token_hex(8)
+_metadata_version_lock = threading.Lock()
 
 
 def get_metadata_version() -> str:
     """Return the current newsletter-metadata version token."""
-    return _metadata_version
+    with _metadata_version_lock:
+        return _metadata_version
 
 
 def bump_metadata_version() -> None:
     """Invalidate feed ETags after a newsletter metadata change."""
     global _metadata_version
-    _metadata_version = secrets.token_hex(8)
+    with _metadata_version_lock:
+        _metadata_version = secrets.token_hex(8)
 
 
-def create_entry(db: Session, entry: EntryCreate, newsletter_id: str):
+def create_entry(
+    db: Session,
+    entry: EntryCreate,
+    newsletter_id: str,
+    *,
+    sanitize: bool = True,
+) -> Entry:
     """Create a new entry for a newsletter."""
     logger.info(
         f"Creating new entry for newsletter_id={newsletter_id} with subject '{entry.subject}'"
     )
-    from app.core.sanitization import sanitize_html
 
     entry_data = entry.model_dump()
-    entry_data["body"] = sanitize_html(entry_data.get("body", ""))
+    if sanitize:
+        entry_data["body"] = sanitize_html(entry_data.get("body", ""))
 
     try:
         db_entry = Entry(id=generate(), **entry_data, newsletter_id=newsletter_id)

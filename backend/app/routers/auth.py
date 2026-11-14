@@ -1,15 +1,19 @@
 import secrets
 from datetime import timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
 from app.core.auth import (
     _get_auth_credentials,
+    check_login_rate_limit,
+    clear_failed_logins,
     create_access_token,
-    is_auth_enabled,
+    get_auth_status,
+    oauth2_scheme,
     protected_route,
+    record_failed_login,
 )
 from app.core.config import settings
 from app.core.database import get_db
@@ -20,18 +24,26 @@ router = APIRouter()
 
 
 @router.get("/auth/status")
-def auth_status(auth_enabled: bool = Depends(is_auth_enabled)):
-    """Check if authentication is enabled."""
-    return {"auth_enabled": auth_enabled}
+def auth_status(
+    request: Request,
+    token: str | None = Depends(oauth2_scheme),
+    db: Session = Depends(get_db),
+) -> dict[str, bool]:
+    """Check if authentication is enabled and whether the request is authenticated."""
+    return get_auth_status(request, token, db)
 
 
 @router.post("/auth/login", response_model=Token)
 def login_for_access_token(
+    request: Request,
     response: Response,
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db),
-):
+) -> dict[str, str]:
     """Verify username and password and return an access token."""
+    client_ip = request.client.host if request.client else "unknown"
+    check_login_rate_limit(client_ip)
+
     auth_creds = _get_auth_credentials(db)
     if not auth_creds.get("username") or not auth_creds.get("password_hash"):
         raise HTTPException(
@@ -45,11 +57,14 @@ def login_for_access_token(
     correct_password = verify_password(form_data.password, auth_creds["password_hash"])
 
     if not (correct_username and correct_password):
+        record_failed_login(client_ip)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+    clear_failed_logins(client_ip)
 
     access_token_expires = timedelta(minutes=settings.access_token_expire_minutes)
     try:

@@ -1,7 +1,8 @@
-import time
 import uuid
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.crud.entries import create_entry, get_all_entries, get_entries_by_newsletter
@@ -9,10 +10,14 @@ from app.crud.newsletters import (
     create_newsletter,
     get_newsletter_by_identifier,
     get_newsletters,
+    update_newsletter,
 )
 from app.crud.settings import create_or_update_settings, get_settings
+from app.models.entries import Entry
+from app.models.newsletters import Sender
+from app.models.settings import Settings as SettingsModel
 from app.schemas.entries import EntryCreate
-from app.schemas.newsletters import NewsletterCreate
+from app.schemas.newsletters import NewsletterCreate, NewsletterUpdate
 from app.schemas.settings import SettingsCreate
 
 
@@ -310,22 +315,26 @@ def test_delete_newsletter(db_session: Session):
 
 def test_create_multiple_entries_have_different_timestamps(db_session: Session):
     """Test that multiple entries for the same newsletter have different timestamps."""
-    import time
-
     newsletter_data = NewsletterCreate(
         name="Timestamp Test Newsletter",
         sender_emails=[f"sender_{uuid.uuid4()}@test.com"],
     )
     newsletter = create_newsletter(db_session, newsletter_data)
+    t1 = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+    t2 = t1 + timedelta(seconds=1)
     entry_data_1 = EntryCreate(
-        subject="Entry 1", body="Body 1", message_id=f"<{uuid.uuid4()}@test.com>"
+        subject="Entry 1",
+        body="Body 1",
+        message_id=f"<{uuid.uuid4()}@test.com>",
+        received_at=t1,
     )
     entry1 = create_entry(db_session, entry_data_1, newsletter.id)
 
-    time.sleep(1)  # sleep for a short time to ensure timestamps are different
-
     entry_data_2 = EntryCreate(
-        subject="Entry 2", body="Body 2", message_id=f"<{uuid.uuid4()}@test.com>"
+        subject="Entry 2",
+        body="Body 2",
+        message_id=f"<{uuid.uuid4()}@test.com>",
+        received_at=t2,
     )
     entry2 = create_entry(db_session, entry_data_2, newsletter.id)
 
@@ -341,7 +350,6 @@ def test_get_all_entries(db_session: Session):
             name="Newsletter One", sender_emails=[f"one_{uuid.uuid4()}@test.com"]
         ),
     )
-    time.sleep(0.1)  # Ensure different timestamps
     newsletter2 = create_newsletter(
         db_session,
         NewsletterCreate(
@@ -349,27 +357,35 @@ def test_get_all_entries(db_session: Session):
         ),
     )
 
-    # Create entries for both
+    base_time = datetime.now(UTC) - timedelta(seconds=10)
+    # Create entries for both with explicit chronological timestamps
     entry1 = create_entry(
         db_session,
         EntryCreate(
-            subject="Entry 1", body="Body 1", message_id=f"<{uuid.uuid4()}@test.com>"
+            subject="Entry 1",
+            body="Body 1",
+            message_id=f"<{uuid.uuid4()}@test.com>",
+            received_at=base_time,
         ),
         newsletter1.id,
     )
-    time.sleep(0.1)
     entry2 = create_entry(
         db_session,
         EntryCreate(
-            subject="Entry 2", body="Body 2", message_id=f"<{uuid.uuid4()}@test.com>"
+            subject="Entry 2",
+            body="Body 2",
+            message_id=f"<{uuid.uuid4()}@test.com>",
+            received_at=base_time + timedelta(seconds=1),
         ),
         newsletter2.id,
     )
-    time.sleep(0.1)
     entry3 = create_entry(
         db_session,
         EntryCreate(
-            subject="Entry 3", body="Body 3", message_id=f"<{uuid.uuid4()}@test.com>"
+            subject="Entry 3",
+            body="Body 3",
+            message_id=f"<{uuid.uuid4()}@test.com>",
+            received_at=base_time + timedelta(seconds=2),
         ),
         newsletter1.id,
     )
@@ -386,3 +402,145 @@ def test_get_all_entries(db_session: Session):
     # Check that newsletter relationship is loaded
     assert all_entries[0].newsletter.name == "Newsletter One"
     assert all_entries[1].newsletter.name == "Newsletter Two"
+
+
+def test_update_settings_preserves_and_clears_auth_password_hash(db_session: Session):
+    """Updating settings with empty/None password keeps hash; clearing username wipes both."""
+    create_or_update_settings(
+        db_session,
+        SettingsCreate(
+            imap_server="imap.test.com",
+            imap_username="test@test.com",
+            imap_password="secret",
+            auth_username="admin",
+            auth_password="initial-password",
+        ),
+    )
+    db_settings = db_session.query(SettingsModel).first()
+    assert db_settings is not None
+    original_hash = db_settings.auth_password_hash
+    assert original_hash is not None
+
+    create_or_update_settings(
+        db_session,
+        SettingsCreate(
+            imap_server="imap.test.com",
+            imap_username="test@test.com",
+            imap_password="secret",
+            auth_username="admin",
+            auth_password="",
+        ),
+    )
+    db_session.refresh(db_settings)
+    assert db_settings.auth_username == "admin"
+    assert db_settings.auth_password_hash == original_hash
+
+    create_or_update_settings(
+        db_session,
+        SettingsCreate(
+            imap_server="imap.test.com",
+            imap_username="test@test.com",
+            imap_password="secret",
+            auth_username="admin",
+            auth_password=None,
+        ),
+    )
+    db_session.refresh(db_settings)
+    assert db_settings.auth_username == "admin"
+    assert db_settings.auth_password_hash == original_hash
+
+    create_or_update_settings(
+        db_session,
+        SettingsCreate(
+            imap_server="imap.test.com",
+            imap_username="test@test.com",
+            imap_password="secret",
+            auth_username="",
+            auth_password="ignored-when-clearing-username",
+        ),
+    )
+    db_session.refresh(db_settings)
+    assert db_settings.auth_username is None
+    assert db_settings.auth_password_hash is None
+
+
+def test_sqlite_cascade_delete_newsletter(db_session: Session):
+    """Raw SQL DELETE on newsletters cascades to entries and senders via foreign_keys=ON."""
+    newsletter = create_newsletter(
+        db_session,
+        NewsletterCreate(
+            name="Cascade NL",
+            sender_emails=[f"cascade_{uuid.uuid4()}@test.com"],
+        ),
+    )
+    create_entry(
+        db_session,
+        EntryCreate(
+            subject="Cascade Entry",
+            body="<p>Body</p>",
+            message_id=f"<{uuid.uuid4()}@test.com>",
+        ),
+        newsletter.id,
+    )
+
+    nl_id = newsletter.id
+    assert db_session.query(Entry).filter(Entry.newsletter_id == nl_id).count() == 1
+    assert db_session.query(Sender).filter(Sender.newsletter_id == nl_id).count() == 1
+
+    db_session.execute(text("DELETE FROM newsletters WHERE id = :id"), {"id": nl_id})
+    db_session.commit()
+
+    assert db_session.query(Entry).filter(Entry.newsletter_id == nl_id).count() == 0
+    assert db_session.query(Sender).filter(Sender.newsletter_id == nl_id).count() == 0
+
+
+def test_get_newsletters_no_silent_100_truncation(db_session: Session):
+    """get_newsletters returns all rows by default without truncating at 100."""
+    for i in range(105):
+        create_newsletter(
+            db_session,
+            NewsletterCreate(
+                name=f"Bulk NL {i}",
+                sender_emails=[f"bulk_{i}_{uuid.uuid4()}@test.com"],
+            ),
+        )
+
+    assert len(get_newsletters(db_session)) == 105
+    assert len(get_newsletters(db_session, limit=10)) == 10
+
+
+def test_sender_email_normalization_and_case_insensitive_update(db_session: Session):
+    """Sender emails are lowercased/deduplicated and matched case-insensitively on update."""
+    newsletter = create_newsletter(
+        db_session,
+        NewsletterCreate(
+            name="Case NL",
+            sender_emails=[
+                "Upper@Example.COM",
+                "upper@example.com",
+                "Second@Example.COM",
+            ],
+        ),
+    )
+    assert newsletter is not None
+    assert [s.email for s in newsletter.senders] == [
+        "upper@example.com",
+        "second@example.com",
+    ]
+
+    updated = update_newsletter(
+        db_session,
+        newsletter.id,
+        NewsletterUpdate(
+            name="Case NL Updated",
+            sender_emails=["SECOND@example.com", "Third@Example.COM"],
+            is_active=False,
+        ),
+    )
+    assert updated is not None
+    assert updated != "conflict"
+    assert updated.is_active is False
+    assert {s.email for s in updated.senders} == {
+        "second@example.com",
+        "third@example.com",
+    }

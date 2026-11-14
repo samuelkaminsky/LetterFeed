@@ -1,30 +1,28 @@
-import datetime
 import email
 import fnmatch
 import imaplib
-import re
 import smtplib
 import threading
+from datetime import UTC, datetime
 from email.header import decode_header, make_header
 from email.message import EmailMessage, Message
 
-import nh3
 from bs4 import BeautifulSoup
 from readability import Document
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.config import settings as env_settings
-from app.core.imap import quote_mailbox, send_client_id
+from app.core.imap import parse_folder_name, quote_mailbox, send_client_id
 from app.core.logging import get_logger
-from app.core.sanitization import ALLOWED_ATTRIBUTES, ALLOWED_TAGS, sanitize_html
+from app.core.sanitization import sanitize_html, strip_control_chars
 from app.crud.entries import (
     create_entry,
     get_entry_by_message_id,
     get_latest_entry_timestamp_cached,
 )
 from app.crud.feed_cache import compute_feed_etag, set_cached_feed
-from app.crud.newsletters import create_newsletter, get_newsletters
+from app.crud.newsletters import create_newsletter, get_all_newsletters_for_processing
 from app.crud.settings import get_settings
 from app.models.newsletters import Newsletter
 from app.schemas.entries import EntryCreate
@@ -48,26 +46,41 @@ def _is_configured(settings: Settings | None) -> bool:
     return True
 
 
+def _close_imap_connection(mail: imaplib.IMAP4_SSL | None) -> None:
+    """Close an IMAP connection cleanly without raising on teardown errors."""
+    if mail is None:
+        return
+    try:
+        mail.logout()
+    except Exception:
+        try:
+            mail.shutdown()
+        except Exception:
+            pass
+
+
 def _connect_to_imap(
     settings: Settings, search_folder: str
 ) -> imaplib.IMAP4_SSL | None:
     """Connect to the IMAP server and select the mailbox."""
+    mail: imaplib.IMAP4_SSL | None = None
     try:
         logger.info(f"Connecting to IMAP server: {settings.imap_server}")
         mail = imaplib.IMAP4_SSL(settings.imap_server, timeout=30)
-        mail.login(settings.imap_username, settings.imap_password)
+        mail.login(settings.imap_username, settings.imap_password or "")
         send_client_id(mail)
         status, messages = mail.select(quote_mailbox(search_folder))
         if status != "OK":
             logger.error(
                 f"Failed to select mailbox: {search_folder}, status: {status}, messages: {messages}"
             )
-            mail.logout()
+            _close_imap_connection(mail)
             return None
         logger.info(f"Selected mailbox: {search_folder}")
         return mail
     except Exception as e:
         logger.error(f"Failed to connect to IMAP server: {e}", exc_info=True)
+        _close_imap_connection(mail)
         return None
 
 
@@ -79,23 +92,16 @@ def _find_archive_folder(mail: imaplib.IMAP4_SSL) -> str | None:
             logger.warning(f"Failed to list IMAP folders for auto-detection: {status}")
             return None
 
-        archive_candidates = []
+        archive_candidates: list[str] = []
         for folder in folders:
+            if not isinstance(folder, bytes):
+                continue
             try:
                 folder_str = folder.decode("utf-8", "ignore")
             except Exception:
                 continue
 
-            # Parse folder name by searching for the last quoted string or the last word
-            name = None
-            match = re.search(r'"([^"]+)"\s*$', folder_str)
-            if match:
-                name = match.group(1)
-            else:
-                parts = folder_str.split()
-                if parts:
-                    name = parts[-1].strip('"')
-
+            name = parse_folder_name(folder_str)
             if not name:
                 continue
 
@@ -164,22 +170,15 @@ def _get_email_body(msg: Message) -> str:
     return html_body or text_body
 
 
-def _sanitize_html(raw_html_content: str) -> str:
-    """Strip control chars and sanitize raw HTML to the allowlist."""
-    return sanitize_html(raw_html_content)
-
-
 def _extract_and_clean_html(raw_html_content: str) -> dict[str, str]:
     """Extract and sanitize newsletter HTML (readability)."""
     # Remove NULL bytes and other control characters that can cause lxml to fail.
-    clean_html_str = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", raw_html_content)
+    clean_html_str = strip_control_chars(raw_html_content)
 
     doc = Document(clean_html_str)
     extracted_body = doc.summary(html_partial=True)
 
-    cleaned_body = nh3.clean(
-        extracted_body, tags=ALLOWED_TAGS, attributes=ALLOWED_ATTRIBUTES
-    )
+    cleaned_body = sanitize_html(extracted_body)
 
     title = doc.title()
     if not title or title == "no-title":
@@ -191,18 +190,28 @@ def _extract_and_clean_html(raw_html_content: str) -> dict[str, str]:
 
 
 def _send_notification_email(
-    newsletter_name: str, sender_email: str, rss_feed_url: str
+    newsletter_name: str,
+    sender_email: str,
+    rss_feed_url: str,
+    imap_username: str = "",
 ) -> None:
     """Send an SMTP email notification when a new newsletter is detected."""
     if not (env_settings.smtp_server and env_settings.notification_email_to):
         return
 
+    from_address = (
+        env_settings.smtp_username or imap_username or env_settings.imap_username
+    )
+    if not from_address:
+        logger.warning(
+            "Skipping notification email: no sender From address is configured."
+        )
+        return
+
     try:
         msg = EmailMessage()
         msg["Subject"] = f"[LetterFeed] New Newsletter: {newsletter_name}"
-        # We assume the IMAP user is the From address for notification,
-        # unless SMTP username is an email and preferred, but IMAP user usually works.
-        msg["From"] = env_settings.imap_username
+        msg["From"] = from_address
         msg["To"] = env_settings.notification_email_to
 
         content = f"""New newsletter detected!
@@ -247,15 +256,21 @@ def _auto_add_newsletter(
         db.query(Sender).filter(func.lower(Sender.email) == sender.lower()).first()
     )
     if existing_sender:
-        logger.warning(
-            f"Sender {sender} is already registered to newsletter {existing_sender.newsletter_id}. "
-            "Reusing existing newsletter to avoid constraint violation."
-        )
-        return (
+        existing_nl = (
             db.query(Newsletter)
             .filter(Newsletter.id == existing_sender.newsletter_id)
             .first()
         )
+        if existing_nl and not existing_nl.is_active:
+            logger.info(
+                f"Sender {sender} belongs to inactive newsletter {existing_nl.id}, skipping."
+            )
+            return None
+        logger.warning(
+            f"Sender {sender} is already registered to newsletter {existing_sender.newsletter_id}. "
+            "Reusing existing newsletter to avoid constraint violation."
+        )
+        return existing_nl
 
     logger.info(f"Auto-adding new newsletter for sender: {sender}")
     # Decode the 'From' header to handle non-ASCII characters in the sender's name
@@ -270,20 +285,25 @@ def _auto_add_newsletter(
         return None
 
     rss_feed_url = f"{env_settings.app_base_url.rstrip('/')}/api/feeds/{new_nl.id}"
-    _send_notification_email(new_nl.name, sender, rss_feed_url)
+    _send_notification_email(
+        new_nl.name,
+        sender,
+        rss_feed_url,
+        imap_username=settings.imap_username,
+    )
 
     return new_nl
 
 
 def _process_single_email(
-    num: str,
+    num: str | bytes,
     mail: imaplib.IMAP4_SSL,
     db: Session,
     sender_map: dict[str, list[Newsletter]],
     settings: Settings,
     detected_archive: str | None = None,
-) -> None:
-    """Process a single email message."""
+) -> bool:
+    r"""Process a single email message, returning True if flagged \Deleted."""
     try:
         status, data = mail.fetch(num, "(BODY.PEEK[])")
         if (
@@ -296,19 +316,20 @@ def _process_single_email(
             logger.warning(
                 f"Failed to fetch email with id={num} or response data is invalid"
             )
-            return
+            return False
 
         msg = email.message_from_bytes(data[0][1])
         # Email addresses are matched case-insensitively: senders frequently
         # vary the case of the domain (and occasionally the local part).
-        sender = email.utils.parseaddr(msg["From"])[1].lower()
+        sender = email.utils.parseaddr(msg.get("From") or "")[1].lower()
         message_id = msg.get("Message-ID")
+        raw_subject = msg.get("Subject") or "(No Subject)"
 
         if not message_id:
             logger.warning(
-                f"Email from {sender} with subject '{msg['Subject']}' has no Message-ID, skipping."
+                f"Email from {sender} with subject '{raw_subject}' has no Message-ID, skipping."
             )
-            return
+            return False
 
         newsletters = sender_map.get(sender, [])
 
@@ -329,10 +350,10 @@ def _process_single_email(
                 sender_map[sender] = [new_nl]
 
         if not newsletters:
-            return
+            return False
 
-        logger.debug(f"Processing email from {sender} with subject '{msg['Subject']}'")
-        subject = str(make_header(decode_header(msg["Subject"])))
+        logger.debug(f"Processing email from {sender} with subject '{raw_subject}'")
+        subject = str(make_header(decode_header(raw_subject)))
         body = _get_email_body(msg)
         date_str = msg["Date"]
 
@@ -344,8 +365,6 @@ def _process_single_email(
                 logger.warning(
                     f"Failed to parse email date '{date_str}': {e}. Falling back to current UTC time."
                 )
-                from datetime import UTC
-
                 received_at = datetime.now(UTC)
 
         # Distribute email to all matching newsletters
@@ -364,7 +383,7 @@ def _process_single_email(
                 )
                 any_success = True
             else:
-                # Prepare entry body
+                # Prepare and sanitize entry body once before persistence
                 entry_body = body
                 if newsletter.extract_content:
                     try:
@@ -375,9 +394,9 @@ def _process_single_email(
                             f"Failed to extract content from email '{subject}' from {sender} for newsletter {newsletter.name}: {e}. "
                             "Falling back to the sanitized raw body."
                         )
-                        entry_body = _sanitize_html(body)
+                        entry_body = sanitize_html(body)
                 else:
-                    entry_body = _sanitize_html(body)
+                    entry_body = sanitize_html(body)
 
                 entry_schema = EntryCreate(
                     subject=subject,
@@ -385,7 +404,9 @@ def _process_single_email(
                     message_id=message_id,
                     received_at=received_at,
                 )
-                new_entry = create_entry(db, entry_schema, newsletter.id)
+                new_entry = create_entry(
+                    db, entry_schema, newsletter.id, sanitize=False
+                )
 
                 if new_entry:
                     logger.info(
@@ -404,7 +425,7 @@ def _process_single_email(
             logger.error(
                 f"Email id={num} could not be successfully processed for any matching newsletters. Leaving it in place."
             )
-            return
+            return False
 
         if settings.mark_as_read:
             logger.debug(f"Marking email with id={num} as read")
@@ -419,18 +440,19 @@ def _process_single_email(
             )
             if copy_status == "OK":
                 mail.store(num, "+FLAGS", "\\Deleted")
-            else:
-                logger.error(
-                    f"Failed to copy email id={num} to folder '{final_move_folder}' "
-                    f"(status={copy_status}, response={copy_response}). "
-                    "Leaving it in place to avoid data loss."
-                )
+                return True
+            logger.error(
+                f"Failed to copy email id={num} to folder '{final_move_folder}' "
+                f"(status={copy_status}, response={copy_response}). "
+                "Leaving it in place to avoid data loss."
+            )
         else:
             logger.warning(
                 f"Could not archive email with id={num} because no move folder is configured and no Archive folder was auto-detected."
             )
     except Exception as e:
         logger.error(f"Failed to process single email id={num}: {e}", exc_info=True)
+    return False
 
 
 def _prewarm_feed_caches(db: Session) -> None:
@@ -452,7 +474,7 @@ def _prewarm_feed_caches(db: Session) -> None:
                 db, "master", compute_feed_etag("master", master_ts), master_content
             )
 
-        for nl in get_newsletters(db):
+        for nl in get_all_newsletters_for_processing(db):
             nl_ts = get_latest_entry_timestamp_cached(db, newsletter_id=nl.id)
             nl_content = generate_feed(
                 db, nl.id, limit=env_settings.newsletter_feed_limit
@@ -475,12 +497,16 @@ def process_emails(db: Session) -> None:
         if not _is_configured(settings):
             return
 
-        all_newsletters = get_newsletters(db)
-        logger.info(f"Processing emails for {len(all_newsletters)} newsletters.")
+        all_newsletters = get_all_newsletters_for_processing(db)
+        active_newsletters = [nl for nl in all_newsletters if nl.is_active]
+        logger.info(
+            f"Processing emails for {len(active_newsletters)} active newsletters "
+            f"({len(all_newsletters)} total)."
+        )
 
-        # Group newsletters by search folder
+        # Group active newsletters by search folder
         folder_groups: dict[str, list[Newsletter]] = {}
-        for nl in all_newsletters:
+        for nl in active_newsletters:
             folder = nl.search_folder or settings.search_folder
             if folder not in folder_groups:
                 folder_groups[folder] = []
@@ -511,12 +537,19 @@ def process_emails(db: Session) -> None:
                 continue
 
             try:
-                # Check if any newsletter or global setting is missing a configured move folder.
-                # If so, we'll try to auto-detect a server Archive folder.
+                # Check if any newsletter, global setting, or auto-added sender path lacks a move folder.
+                # If so, try to auto-detect a server Archive folder.
                 detected_archive = None
                 has_missing_move_folder = any(
                     not (nl.move_to_folder or settings.move_to_folder)
                     for nl in newsletters_in_folder
+                ) or (
+                    not settings.move_to_folder
+                    and settings.auto_add_new_senders
+                    and (
+                        not newsletters_in_folder
+                        or search_folder == settings.search_folder
+                    )
                 )
                 if has_missing_move_folder:
                     detected_archive = _find_archive_folder(mail)
@@ -529,17 +562,14 @@ def process_emails(db: Session) -> None:
                 logger.info(
                     f"Found {len(email_ids)} unseen emails in folder '{search_folder}'."
                 )
+                any_deleted = False
                 for num in email_ids:
-                    _process_single_email(
+                    if _process_single_email(
                         num, mail, db, sender_map, settings, detected_archive
-                    )
+                    ):
+                        any_deleted = True
 
-                # Expunge logic: expunge if any configured or auto-detected folder is used
-                should_expunge = any(
-                    nl.move_to_folder or settings.move_to_folder or detected_archive
-                    for nl in newsletters_in_folder
-                )
-                if should_expunge:
+                if any_deleted:
                     logger.info(f"Expunging deleted emails from '{search_folder}'")
                     mail.expunge()
 
@@ -549,7 +579,7 @@ def process_emails(db: Session) -> None:
                     exc_info=True,
                 )
             finally:
-                mail.logout()
+                _close_imap_connection(mail)
 
         # Clean up old entries based on retention settings (storage purge)
         if env_settings.feed_retention_days is not None:

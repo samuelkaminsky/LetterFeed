@@ -1,4 +1,4 @@
-import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import Column, DateTime, String, Text
 
@@ -10,7 +10,7 @@ class FeedCache(Base):
 
     __tablename__ = "feed_caches"
 
-    feed_id = Column(String, primary_key=True, index=True)
+    feed_id = Column(String, primary_key=True)
     etag = Column(String, nullable=False)
     content = Column(Text, nullable=False)
-    generated_at = Column(DateTime(timezone=True), default=datetime.datetime.now)
+    generated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC))

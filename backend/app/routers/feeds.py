@@ -50,11 +50,16 @@ def _not_modified(
     return False
 
 
-def _feed_headers(etag: str, latest_timestamp: datetime | None) -> dict[str, str]:
+def _feed_headers(
+    etag: str,
+    latest_timestamp: datetime | None,
+    auth_enabled: bool = False,
+) -> dict[str, str]:
     """Build the response headers common to every feed response."""
+    cache_scope = "private" if auth_enabled else "public"
     headers = {
         "ETag": etag,
-        "Cache-Control": "public, max-age=60, stale-while-revalidate=300",
+        "Cache-Control": f"{cache_scope}, max-age=60, stale-while-revalidate=300",
         "Vary": "Accept-Encoding",
     }
     if latest_timestamp:
@@ -72,10 +77,11 @@ def _conditional_feed_response(
     if_modified_since: str | None,
     generate_fn: Callable[[], str | bytes | None],
     is_head: bool = False,
+    auth_enabled: bool = False,
 ) -> Response:
     """Serve a feed with ETag/If-Modified-Since handling and DB/memory caching."""
     etag = compute_feed_etag(cache_key, latest_timestamp)
-    headers = _feed_headers(etag, latest_timestamp)
+    headers = _feed_headers(etag, latest_timestamp, auth_enabled=auth_enabled)
 
     if _not_modified(latest_timestamp, etag, if_none_match, if_modified_since):
         return Response(status_code=304, headers=headers)
@@ -107,12 +113,13 @@ def get_master_feed(
     db: Session = Depends(get_db),
     if_none_match: str | None = Header(default=None),
     if_modified_since: str | None = Header(default=None),
-):
+) -> Response:
     """Generate a master Atom feed for all newsletters."""
     # Authenticate the master feed if auth is enabled. Both is_auth_enabled and
     # the master token are served from in-memory caches, so a warm secured 304
     # still issues zero DB queries.
-    if is_auth_enabled(db):
+    auth_enabled = is_auth_enabled(db)
+    if auth_enabled:
         master_token = get_master_feed_token(db)
         if (
             not token
@@ -137,6 +144,7 @@ def get_master_feed(
         if_modified_since,
         lambda: generate_master_feed(db, request=request),
         is_head=(request.method == "HEAD"),
+        auth_enabled=auth_enabled,
     )
 
 
@@ -147,7 +155,7 @@ def get_newsletter_feed(
     db: Session = Depends(get_db),
     if_none_match: str | None = Header(default=None),
     if_modified_since: str | None = Header(default=None),
-):
+) -> Response:
     """Generate an Atom feed for a specific newsletter."""
     logger.info(f"Generating feed for newsletter with identifier={feed_identifier}")
 
@@ -164,7 +172,8 @@ def get_newsletter_feed(
 
     # Secure feeds: restrict access to the cryptographically secure ID (NanoID)
     # to prevent slug guessing when authentication is enabled.
-    if newsletter_slug == feed_identifier and is_auth_enabled(db):
+    auth_enabled = is_auth_enabled(db)
+    if newsletter_slug == feed_identifier and auth_enabled:
         logger.warning(
             f"Blocked guessable slug-based feed access for slug '{feed_identifier}'."
         )
@@ -191,4 +200,5 @@ def get_newsletter_feed(
             limit=settings.newsletter_feed_limit,
         ),
         is_head=(request.method == "HEAD"),
+        auth_enabled=auth_enabled,
     )

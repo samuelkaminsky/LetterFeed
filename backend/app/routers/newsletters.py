@@ -41,7 +41,9 @@ def create_new_newsletter(newsletter: NewsletterCreate, db: Session = Depends(ge
 
 
 @router.get("/newsletters", response_model=List[Newsletter])
-def read_newsletters(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+def read_newsletters(
+    skip: int = 0, limit: int | None = None, db: Session = Depends(get_db)
+):
     """Retrieve a list of newsletters."""
     logger.info(f"Request to read newsletters with skip={skip}, limit={limit}")
     newsletters = get_newsletters(db, skip=skip, limit=limit)
@@ -93,12 +95,12 @@ def delete_existing_newsletter(newsletter_id: str, db: Session = Depends(get_db)
         logger.warning(f"Newsletter with id={newsletter_id} not found, cannot delete")
         raise HTTPException(status_code=404, detail="Newsletter not found")
 
-    # Invalidate feed cache for this newsletter
+    # Invalidate feed cache for this newsletter using its resolved canonical ID
     try:
-        delete_cached_feed(db, newsletter_id)
+        delete_cached_feed(db, db_newsletter.id)
     except Exception as e:
         logger.error(
-            f"Failed to delete feed cache for newsletter_id={newsletter_id}: {e}"
+            f"Failed to delete feed cache for newsletter_id={db_newsletter.id}: {e}"
         )
 
     return db_newsletter
@@ -116,4 +118,4 @@ def create_newsletter_entry(
             f"Newsletter with id={newsletter_id} not found, cannot create entry"
         )
         raise HTTPException(status_code=404, detail="Newsletter not found")
-    return create_entry(db=db, entry=entry, newsletter_id=newsletter_id)
+    return create_entry(db=db, entry=entry, newsletter_id=db_newsletter.id)

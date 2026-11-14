@@ -1,6 +1,7 @@
 import hashlib
+import threading
 from collections import OrderedDict
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
 
@@ -29,6 +30,16 @@ def compute_feed_etag(identifier: str, timestamp: datetime | None) -> str:
 # Bounded in-memory cache for feeds: feed_id -> (etag, content_str)
 _FEED_MEMORY_CACHE_MAX = 64
 _feed_memory_cache: OrderedDict[str, tuple[str, str]] = OrderedDict()
+_feed_memory_cache_lock = threading.Lock()
+
+
+def _store_in_memory_cache(feed_id: str, etag: str, content_str: str) -> None:
+    """Store a feed entry in the bounded LRU memory cache under lock."""
+    with _feed_memory_cache_lock:
+        _feed_memory_cache[feed_id] = (etag, content_str)
+        _feed_memory_cache.move_to_end(feed_id)
+        while len(_feed_memory_cache) > _FEED_MEMORY_CACHE_MAX:
+            _feed_memory_cache.popitem(last=False)
 
 
 def get_cached_feed(db: Session, feed_id: str, current_etag: str) -> str | None:
@@ -38,25 +49,23 @@ def get_cached_feed(db: Session, feed_id: str, current_etag: str) -> str | None:
     )
 
     # Check in-memory cache first
-    if feed_id in _feed_memory_cache:
-        cached_etag, cached_content = _feed_memory_cache[feed_id]
-        if cached_etag == current_etag:
-            logger.debug(
-                f"Memory cache hit for feed_id={feed_id} with etag={current_etag}"
-            )
-            _feed_memory_cache.move_to_end(feed_id)
-            return cached_content
+    with _feed_memory_cache_lock:
+        if feed_id in _feed_memory_cache:
+            cached_etag, cached_content = _feed_memory_cache[feed_id]
+            if cached_etag == current_etag:
+                logger.debug(
+                    f"Memory cache hit for feed_id={feed_id} with etag={current_etag}"
+                )
+                _feed_memory_cache.move_to_end(feed_id)
+                return cached_content
 
-    # Fall back to DB cache
+    # Fall back to DB cache outside the memory lock
     cache_entry = db.query(FeedCache).filter(FeedCache.feed_id == feed_id).first()
     if cache_entry and cache_entry.etag == current_etag:
         logger.debug(
             f"DB Cache hit for feed_id={feed_id} with etag={current_etag}. Updating memory cache."
         )
-        _feed_memory_cache[feed_id] = (current_etag, cache_entry.content)
-        _feed_memory_cache.move_to_end(feed_id)
-        while len(_feed_memory_cache) > _FEED_MEMORY_CACHE_MAX:
-            _feed_memory_cache.popitem(last=False)
+        _store_in_memory_cache(feed_id, current_etag, cache_entry.content)
         return cache_entry.content
 
     logger.debug(f"Cache miss for feed_id={feed_id}")
@@ -69,23 +78,21 @@ def set_cached_feed(db: Session, feed_id: str, etag: str, content: bytes | str) 
     content_str = content.decode("utf-8") if isinstance(content, bytes) else content
 
     # Update memory cache
-    _feed_memory_cache[feed_id] = (etag, content_str)
-    _feed_memory_cache.move_to_end(feed_id)
-    while len(_feed_memory_cache) > _FEED_MEMORY_CACHE_MAX:
-        _feed_memory_cache.popitem(last=False)
+    _store_in_memory_cache(feed_id, etag, content_str)
 
     # Update DB cache
+    now = datetime.now(UTC)
     cache_entry = db.query(FeedCache).filter(FeedCache.feed_id == feed_id).first()
     if cache_entry:
         cache_entry.etag = etag
         cache_entry.content = content_str
-        cache_entry.generated_at = datetime.now()
+        cache_entry.generated_at = now
     else:
         cache_entry = FeedCache(
             feed_id=feed_id,
             etag=etag,
             content=content_str,
-            generated_at=datetime.now(),
+            generated_at=now,
         )
         db.add(cache_entry)
     db.commit()
@@ -94,6 +101,7 @@ def set_cached_feed(db: Session, feed_id: str, etag: str, content: bytes | str) 
 def delete_cached_feed(db: Session, feed_id: str) -> None:
     """Delete cached feed content for a feed_id."""
     logger.info(f"Invalidating cache for feed_id={feed_id}")
-    _feed_memory_cache.pop(feed_id, None)
+    with _feed_memory_cache_lock:
+        _feed_memory_cache.pop(feed_id, None)
     db.query(FeedCache).filter(FeedCache.feed_id == feed_id).delete()
     db.commit()

@@ -2,14 +2,21 @@ import imaplib
 from email.message import Message
 from unittest.mock import MagicMock, patch
 
+from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from app.crud.newsletters import create_newsletter
+from app.core.imap import get_folders
+from app.crud.entries import get_entries_by_newsletter
+from app.crud.newsletters import create_newsletter, get_newsletters
 from app.crud.settings import create_or_update_settings
 from app.models.newsletters import Newsletter
 from app.schemas.newsletters import NewsletterCreate
 from app.schemas.settings import Settings, SettingsCreate
-from app.services.email_processor import _process_single_email, process_emails
+from app.services.email_processor import (
+    _process_single_email,
+    _send_notification_email,
+    process_emails,
+)
 
 
 def _setup_test_email_processing(
@@ -485,3 +492,193 @@ def test_process_single_email_with_auto_detected_archive_fallback(db_session: Se
     # Should use the detected_archive fallback
     mock_mail.copy.assert_called_once_with("1", '"DetectedArchive"')
     mock_mail.store.assert_any_call("1", "+FLAGS", "\\Deleted")
+
+
+def test_process_single_email_malformed_date_and_missing_subject(db_session: Session):
+    """Malformed Date and missing Subject headers should not raise exceptions."""
+    settings = create_or_update_settings(
+        db_session,
+        SettingsCreate(
+            imap_server="imap.test.com",
+            imap_username="test",
+            imap_password="password",
+            move_to_folder=None,
+        ),
+    )
+    newsletter = create_newsletter(
+        db_session,
+        NewsletterCreate(name="Fallback Header NL", sender_emails=["hdr@example.com"]),
+    )
+
+    msg = Message()
+    msg["From"] = "hdr@example.com"
+    msg["Message-ID"] = "<malformed-date-missing-subject>"
+    msg["Date"] = "not-a-valid-rfc2822-date"
+    # Intentionally omit msg["Subject"]
+    msg.set_payload("<html><body><p>Body</p></body></html>", "utf-8")
+
+    mock_mail = MagicMock(spec=imaplib.IMAP4_SSL)
+    mock_mail.fetch.return_value = ("OK", [(b"1 (RFC822)", msg.as_bytes())])
+
+    deleted = _process_single_email(
+        "1",
+        mock_mail,
+        db_session,
+        {"hdr@example.com": [newsletter]},
+        settings,
+    )
+    assert deleted is False
+    entries = get_entries_by_newsletter(db_session, newsletter.id)
+    assert len(entries) == 1
+    assert entries[0].subject == "(No Subject)"
+    assert entries[0].received_at is not None
+
+
+def test_process_emails_skips_inactive_newsletter_and_does_not_revive(
+    db_session: Session,
+):
+    """Inactive newsletters are skipped even when auto_add_new_senders is enabled."""
+    create_or_update_settings(
+        db_session,
+        SettingsCreate(
+            imap_server="imap.test.com",
+            imap_username="test",
+            imap_password="password",
+            auto_add_new_senders=True,
+            move_to_folder="Archive",
+        ),
+    )
+    inactive_nl = create_newsletter(
+        db_session,
+        NewsletterCreate(
+            name="Paused NL",
+            sender_emails=["paused@example.com"],
+            is_active=False,
+        ),
+    )
+
+    msg = Message()
+    msg["From"] = "paused@example.com"
+    msg["Subject"] = "Should Be Skipped"
+    msg["Message-ID"] = "<paused-msg-1>"
+    msg.set_payload("<html><body><p>Ignored</p></body></html>", "utf-8")
+
+    mock_mail = MagicMock(spec=imaplib.IMAP4_SSL)
+    mock_mail.select.return_value = ("OK", [b"1"])
+    mock_mail.search.return_value = ("OK", [b"1"])
+    mock_mail.fetch.return_value = ("OK", [(b"1 (RFC822)", msg.as_bytes())])
+
+    with patch(
+        "app.services.email_processor.imaplib.IMAP4_SSL", return_value=mock_mail
+    ):
+        process_emails(db_session)
+
+    assert len(get_newsletters(db_session)) == 1
+    assert get_entries_by_newsletter(db_session, inactive_nl.id) == []
+    mock_mail.expunge.assert_not_called()
+
+
+def test_process_emails_empty_folder_auto_add_detects_archive_and_expunges(
+    db_session: Session,
+):
+    """Auto-add with no existing newsletters detects Archive and calls expunge iff Deleted."""
+    create_or_update_settings(
+        db_session,
+        SettingsCreate(
+            imap_server="imap.test.com",
+            imap_username="test",
+            imap_password="password",
+            auto_add_new_senders=True,
+            move_to_folder=None,
+        ),
+    )
+
+    msg = Message()
+    msg["From"] = "Auto NL <auto@example.com>"
+    msg["Subject"] = "Hello Auto"
+    msg["Message-ID"] = "<auto-msg-1>"
+    msg.set_payload("<html><body><p>Content</p></body></html>", "utf-8")
+
+    mock_mail = MagicMock(spec=imaplib.IMAP4_SSL)
+    mock_mail.select.return_value = ("OK", [b"1"])
+    mock_mail.list.return_value = (
+        "OK",
+        [b'(\\HasNoChildren \\Archive) "/" "Archive"'],
+    )
+    mock_mail.search.return_value = ("OK", [b"1"])
+    mock_mail.fetch.return_value = ("OK", [(b"1 (RFC822)", msg.as_bytes())])
+    mock_mail.copy.return_value = ("OK", [b"[COPYUID 1 1 1]"])
+
+    with patch(
+        "app.services.email_processor.imaplib.IMAP4_SSL", return_value=mock_mail
+    ):
+        process_emails(db_session)
+
+    mock_mail.list.assert_called_once()
+    mock_mail.copy.assert_called_once_with(b"1", '"Archive"')
+    mock_mail.store.assert_any_call(b"1", "+FLAGS", "\\Deleted")
+    mock_mail.expunge.assert_called_once()
+
+    # Second run with no unseen emails does not call expunge
+    mock_mail.expunge.reset_mock()
+    mock_mail.search.return_value = ("OK", [b""])
+    with patch(
+        "app.services.email_processor.imaplib.IMAP4_SSL", return_value=mock_mail
+    ):
+        process_emails(db_session)
+
+    mock_mail.expunge.assert_not_called()
+
+
+def test_send_notification_email_from_fallback_and_empty_guard():
+    """Notification email falls back to imap_username and skips if no From exists."""
+    with (
+        patch("app.services.email_processor.env_settings") as mock_env,
+        patch("app.services.email_processor.smtplib.SMTP") as mock_smtp_cls,
+    ):
+        mock_env.smtp_server = "smtp.example.com"
+        mock_env.smtp_port = 587
+        mock_env.notification_email_to = "dest@example.com"
+        mock_env.smtp_username = ""
+        mock_env.smtp_password = ""
+        mock_env.imap_username = ""
+
+        # Empty guard: neither smtp_username nor imap_username set
+        _send_notification_email("Test NL", "news@example.com", "http://feed/1")
+        mock_smtp_cls.assert_not_called()
+
+        # Fallback to passed imap_username
+        _send_notification_email(
+            "Test NL",
+            "news@example.com",
+            "http://feed/1",
+            imap_username="imap@example.com",
+        )
+        mock_smtp = mock_smtp_cls.return_value.__enter__.return_value
+        mock_smtp.send_message.assert_called_once()
+        sent_msg = mock_smtp.send_message.call_args[0][0]
+        assert sent_msg["From"] == "imap@example.com"
+
+
+def test_get_folders_short_circuits_on_empty_credentials():
+    """get_folders returns [] without opening an IMAP socket when creds are missing."""
+    with patch("app.core.imap.imaplib.IMAP4_SSL") as mock_imap:
+        assert get_folders("", "user", "pass") == []
+        assert get_folders("imap.example.com", "", "pass") == []
+        assert get_folders("imap.example.com", "user", "") == []
+        mock_imap.assert_not_called()
+
+
+def test_imap_process_endpoint_returns_generic_500_on_unexpected_error(
+    client: TestClient,
+):
+    """POST /imap/process hides exception details on unexpected 500 errors."""
+    with patch(
+        "app.routers.imap.process_emails",
+        side_effect=RuntimeError("sensitive-credential-leak"),
+    ):
+        response = client.post("/imap/process")
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Internal server error during email processing."
+    assert "sensitive-credential-leak" not in response.text
