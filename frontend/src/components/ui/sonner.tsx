@@ -5,8 +5,15 @@ import { Toaster as Sonner } from "sonner"
 type ToasterProps = React.ComponentProps<typeof Sonner>
 
 const Toaster = ({ ...props }: ToasterProps) => {
+  // Sonner crashes in environments without window.matchMedia (e.g. jsdom) when theme="system"
+  const defaultTheme: ToasterProps["theme"] =
+    typeof window === "undefined" || typeof window.matchMedia === "function"
+      ? "system"
+      : "light"
+
   return (
     <Sonner
+      theme={defaultTheme}
       className="toaster group"
       toastOptions={{
         classNames: {

@@ -73,6 +73,7 @@ describe("AuthContext", () => {
     await waitFor(() => {
       expect(screen.getByText("Is Authenticated: true")).toBeInTheDocument()
       expect(screen.getByText("Is Auth Enabled: true")).toBeInTheDocument()
+      expect(mockedApi.verifyAuth).toHaveBeenCalledTimes(1)
     })
   })
 
@@ -93,6 +94,50 @@ describe("AuthContext", () => {
     await waitFor(() => {
       expect(screen.getByText("Is Authenticated: false")).toBeInTheDocument()
     })
+  })
+
+  it("uses single-request fast path without calling verifyAuth when status includes authenticated boolean", async () => {
+    mockedApi.getAuthStatus.mockResolvedValue({ auth_enabled: true, authenticated: true })
+    render(
+      <AuthProvider>
+        <AuthContext.Consumer>
+          {(value) => (
+            <div>
+              <span>
+                Is Authenticated: {value?.isAuthenticated.toString()}
+              </span>
+              <span>
+                Is Auth Enabled: {value?.isAuthEnabled.toString()}
+              </span>
+            </div>
+          )}
+        </AuthContext.Consumer>
+      </AuthProvider>
+    )
+    await waitFor(() => {
+      expect(screen.getByText("Is Authenticated: true")).toBeInTheDocument()
+      expect(screen.getByText("Is Auth Enabled: true")).toBeInTheDocument()
+    })
+    expect(mockedApi.verifyAuth).not.toHaveBeenCalled()
+  })
+
+  it("sets unauthenticated on fast path when status.authenticated is false without calling verifyAuth", async () => {
+    mockedApi.getAuthStatus.mockResolvedValue({ auth_enabled: true, authenticated: false })
+    render(
+      <AuthProvider>
+        <AuthContext.Consumer>
+          {(value) => (
+            <span>
+              Is Authenticated: {value?.isAuthenticated.toString()}
+            </span>
+          )}
+        </AuthContext.Consumer>
+      </AuthProvider>
+    )
+    await waitFor(() => {
+      expect(screen.getByText("Is Authenticated: false")).toBeInTheDocument()
+    })
+    expect(mockedApi.verifyAuth).not.toHaveBeenCalled()
   })
 
   it("login works correctly", async () => {
@@ -124,10 +169,49 @@ describe("AuthContext", () => {
     })
   })
 
-  it("logout works correctly", async () => {
-    mockedApi.getAuthStatus.mockResolvedValue({ auth_enabled: true })
-    mockedApi.verifyAuth.mockResolvedValue(true)
-    mockedApi.logout.mockResolvedValue()
+  it("logout awaits apiLogout before clearing auth state and redirecting", async () => {
+    mockedApi.getAuthStatus.mockResolvedValue({ auth_enabled: true, authenticated: true })
+    let resolveLogout!: () => void
+    mockedApi.logout.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveLogout = resolve
+        })
+    )
+    render(
+      <AuthProvider>
+        <AuthContext.Consumer>
+          {(value) => (
+            <>
+              <span>
+                Is Authenticated: {value?.isAuthenticated.toString()}
+              </span>
+              <button onClick={() => value?.logout()}>Logout</button>
+            </>
+          )}
+        </AuthContext.Consumer>
+      </AuthProvider>
+    )
+    await waitFor(() => {
+      expect(screen.getByText("Is Authenticated: true")).toBeInTheDocument()
+    })
+
+    fireEvent.click(screen.getByText("Logout"))
+    await waitFor(() => {
+      expect(mockedApi.logout).toHaveBeenCalledTimes(1)
+    })
+    expect(push).not.toHaveBeenCalled()
+
+    resolveLogout()
+    await waitFor(() => {
+      expect(screen.getByText("Is Authenticated: false")).toBeInTheDocument()
+      expect(push).toHaveBeenCalledWith("/login")
+    })
+  })
+
+  it("logout still clears auth state and redirects if apiLogout fails", async () => {
+    mockedApi.getAuthStatus.mockResolvedValue({ auth_enabled: true, authenticated: true })
+    mockedApi.logout.mockRejectedValue(new Error("Network error"))
     render(
       <AuthProvider>
         <AuthContext.Consumer>
@@ -147,7 +231,6 @@ describe("AuthContext", () => {
     })
     fireEvent.click(screen.getByText("Logout"))
     await waitFor(() => {
-      expect(mockedApi.logout).toHaveBeenCalled()
       expect(screen.getByText("Is Authenticated: false")).toBeInTheDocument()
       expect(push).toHaveBeenCalledWith("/login")
     })

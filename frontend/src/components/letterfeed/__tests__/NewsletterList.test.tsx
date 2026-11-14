@@ -6,8 +6,19 @@ import { Newsletter } from "@/lib/api"
 
 // Mock the child component to isolate the list component's behavior
 jest.mock("../NewsletterCard", () => ({
-  NewsletterCard: ({ newsletter }: { newsletter: Newsletter }) => (
-    <div data-testid={`newsletter-card-${newsletter.id}`}>{newsletter.name}</div>
+  NewsletterCard: ({
+    newsletter,
+    isAuthEnabled,
+  }: {
+    newsletter: Newsletter
+    isAuthEnabled?: boolean
+  }) => (
+    <div
+      data-testid={`newsletter-card-${newsletter.id}`}
+      data-auth-enabled={String(isAuthEnabled)}
+    >
+      {newsletter.name}
+    </div>
   ),
 }))
 
@@ -33,19 +44,23 @@ const mockNewsletters: Newsletter[] = [
 ]
 
 describe("NewsletterList", () => {
-  it("renders a list of newsletter cards", () => {
-    render(<NewsletterList newsletters={mockNewsletters} onEditNewsletter={() => {}} />)
+  it("renders a list of newsletter cards and forwards isAuthEnabled", () => {
+    render(
+      <NewsletterList
+        newsletters={mockNewsletters}
+        onEditNewsletter={() => {}}
+        isAuthEnabled={false}
+      />
+    )
 
-    // Check that both newsletters are rendered
     expect(screen.getByText("Newsletter One")).toBeInTheDocument()
     expect(screen.getByText("Newsletter Two")).toBeInTheDocument()
-    expect(screen.getByTestId("newsletter-card-1")).toBeInTheDocument()
-    expect(screen.getByTestId("newsletter-card-2")).toBeInTheDocument()
+    expect(screen.getByTestId("newsletter-card-1")).toHaveAttribute("data-auth-enabled", "false")
+    expect(screen.getByTestId("newsletter-card-2")).toHaveAttribute("data-auth-enabled", "false")
   })
 
   it("renders nothing when the newsletter list is empty", () => {
     const { container } = render(<NewsletterList newsletters={[]} onEditNewsletter={() => {}} />)
-    // The main div should be empty
     expect(container.firstChild).toBeEmptyDOMElement()
   })
 })

@@ -31,6 +31,7 @@ jest.mock("sonner", () => {
 describe("Header", () => {
   const onOpenAddNewsletter = jest.fn()
   const onOpenSettings = jest.fn()
+  const onProcessSuccess = jest.fn()
   const logout = jest.fn()
   const consoleError = jest.spyOn(console, "error").mockImplementation(() => {})
 
@@ -39,7 +40,7 @@ describe("Header", () => {
     consoleError.mockClear()
     mockedUseAuth.mockReturnValue({
       logout,
-      isAuthEnabled: true, // Default to auth being enabled for most tests
+      isAuthEnabled: true,
     })
   })
 
@@ -97,7 +98,7 @@ describe("Header", () => {
     expect(onOpenSettings).toHaveBeenCalledTimes(1)
   })
 
-  it('calls the process emails API when "Process Now" button is clicked and shows success toast', async () => {
+  it('calls the process emails API when "Process Now" button is clicked, shows success toast, and invokes onProcessSuccess', async () => {
     mockedApi.processEmails.mockResolvedValue({ message: "Success" })
 
     render(
@@ -105,6 +106,7 @@ describe("Header", () => {
         <Header
           onOpenAddNewsletter={onOpenAddNewsletter}
           onOpenSettings={onOpenSettings}
+          onProcessSuccess={onProcessSuccess}
         />
         <Toaster />
       </>
@@ -120,10 +122,11 @@ describe("Header", () => {
       expect(toast.success).toHaveBeenCalledWith(
         "Email processing finished successfully!"
       )
+      expect(onProcessSuccess).toHaveBeenCalledTimes(1)
     })
   })
 
-  it("shows an error toast if the process emails API call fails", async () => {
+  it("shows an error toast if the process emails API call fails with an untoasted error", async () => {
     mockedApi.processEmails.mockRejectedValue(new Error("Failed to process"))
 
     render(
@@ -145,5 +148,27 @@ describe("Header", () => {
     await waitFor(() => {
       expect(toast.error).toHaveBeenCalledWith("Failed to process")
     })
+  })
+
+  it("does not emit a duplicate toast if the error was already toasted by the API layer", async () => {
+    const toastedError = Object.assign(new Error("Already toasted"), { toasted: true })
+    mockedApi.processEmails.mockRejectedValue(toastedError)
+
+    render(
+      <Header
+        onOpenAddNewsletter={onOpenAddNewsletter}
+        onOpenSettings={onOpenSettings}
+      />
+    )
+
+    fireEvent.click(screen.getByText("Process Now"))
+
+    await waitFor(() => {
+      expect(api.processEmails).toHaveBeenCalledTimes(1)
+    })
+    await waitFor(() => {
+      expect(screen.getByText("Process Now")).toBeEnabled()
+    })
+    expect(toast.error).not.toHaveBeenCalled()
   })
 })

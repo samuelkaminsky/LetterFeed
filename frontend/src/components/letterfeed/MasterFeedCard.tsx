@@ -33,7 +33,7 @@ export function MasterFeedCard({ masterFeedToken }: MasterFeedCardProps) {
     <Card className="mb-8 border border-orange-100 dark:border-orange-950 bg-gradient-to-br from-white to-orange-50/20 dark:from-neutral-900 dark:to-orange-950/10 hover:shadow-md transition-shadow">
       <CardHeader className="pb-3">
         <CardTitle className="flex items-center gap-2 text-lg font-bold">
-          <Rss className="w-5 h-5 text-orange-500 animate-pulse" />
+          <Rss className="w-5 h-5 text-orange-500 motion-safe:animate-pulse" />
           Master RSS Feed
         </CardTitle>
       </CardHeader>
@@ -58,7 +58,7 @@ export function MasterFeedCard({ masterFeedToken }: MasterFeedCardProps) {
               >
                 {copied ? (
                   <>
-                    <Check className="w-3.5 h-3.5 text-green-500 animate-scale" />
+                    <Check className="w-3.5 h-3.5 text-green-500 motion-safe:animate-in motion-safe:zoom-in-75 duration-150" />
                     <span>Copied</span>
                   </>
                 ) : (

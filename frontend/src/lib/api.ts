@@ -1,3 +1,5 @@
+import { toast } from "sonner";
+
 const API_BASE_URL = '/api';
 
 export interface Sender {
@@ -21,6 +23,7 @@ export interface Newsletter {
 export interface NewsletterCreate {
     name: string;
     slug?: string | null;
+    is_active?: boolean;
     sender_emails: string[];
     search_folder?: string | null;
     move_to_folder?: string | null;
@@ -30,6 +33,7 @@ export interface NewsletterCreate {
 export interface NewsletterUpdate {
     name: string;
     slug?: string | null;
+    is_active?: boolean;
     sender_emails: string[];
     search_folder?: string | null;
     move_to_folder?: string | null;
@@ -45,6 +49,8 @@ export interface Settings {
     mark_as_read: boolean;
     email_check_interval: number;
     auto_add_new_senders: boolean;
+    auth_username?: string | null;
+    auth_password?: string | null;
     locked_fields: string[];
     master_feed_token?: string | null;
 }
@@ -58,38 +64,80 @@ export interface SettingsCreate {
     mark_as_read: boolean;
     email_check_interval: number;
     auto_add_new_senders: boolean;
+    auth_username?: string | null;
+    auth_password?: string | null;
 }
 
+interface FetcherConfig {
+    returnEmptyArrayOnFailure?: boolean;
+    suppressToast?: boolean;
+}
 
-import { toast } from "sonner";
+function extractErrorDetail(errorData: unknown): string | null {
+    if (!errorData || typeof errorData !== "object" || !("detail" in errorData)) {
+        return null;
+    }
+    const { detail } = errorData;
+    if (typeof detail === "string" && detail.trim()) {
+        return detail;
+    }
+    if (Array.isArray(detail)) {
+        const messages = detail
+            .map((item: unknown) => {
+                if (typeof item === "string" && item.trim()) {
+                    return item;
+                }
+                if (item && typeof item === "object" && "msg" in item && typeof item.msg === "string") {
+                    return item.msg;
+                }
+                return null;
+            })
+            .filter((msg): msg is string => Boolean(msg));
+        if (messages.length > 0) {
+            return messages.join("; ");
+        }
+    }
+    return null;
+}
 
 async function fetcher<T>(
     url: string,
     options: RequestInit = {},
     errorMessagePrefix: string,
-    returnEmptyArrayOnFailure: boolean = false
+    config: FetcherConfig = {}
 ): Promise<T> {
+    const { returnEmptyArrayOnFailure = false, suppressToast = false } = config;
     try {
-        // Enforce same-origin credentials to automatically send HttpOnly cookies
-        options.credentials = 'same-origin';
+        // Enforce same-origin credentials without mutating caller's options
+        const fetchOptions: RequestInit = {
+            ...options,
+            credentials: 'same-origin',
+        };
 
-        const response = await fetch(url, options);
+        const response = await fetch(url, fetchOptions);
         if (!response.ok) {
             let errorText = `${errorMessagePrefix}: ${response.statusText}`;
             try {
-                const errorData = await response.json();
-                if (errorData.detail) {
-                    errorText = errorData.detail;
+                const errorData: unknown = await response.json();
+                const detail = extractErrorDetail(errorData);
+                if (detail) {
+                    errorText = detail;
                 }
-            } catch (e) { // eslint-disable-line @typescript-eslint/no-unused-vars
+            } catch {
                 // ignore error if response is not JSON
             }
 
-            toast.error(errorText);
+            if (!suppressToast) {
+                toast.error(errorText);
+            }
             if (returnEmptyArrayOnFailure) {
                 return [] as T;
             }
-            throw new Error(errorText);
+            const error = new Error(errorText);
+            if (!suppressToast) {
+                Object.assign(error, { toasted: true });
+            }
+            throw error;
         }
         // For login or delete, we might not have a body
         if (response.status === 204) {
@@ -97,8 +145,9 @@ async function fetcher<T>(
         }
         return response.json();
     } catch (error) {
-        if (error instanceof TypeError) {
+        if (error instanceof TypeError && !suppressToast) {
             toast.error("Network error: Could not connect to the backend.");
+            Object.assign(error, { toasted: true });
         }
         if (returnEmptyArrayOnFailure) {
             return [] as T;
@@ -107,8 +156,12 @@ async function fetcher<T>(
     }
 }
 
-export async function getAuthStatus(): Promise<{ auth_enabled: boolean }> {
-    return fetcher<{ auth_enabled: boolean }>(`${API_BASE_URL}/auth/status`, {}, "Failed to fetch auth status");
+export async function getAuthStatus(): Promise<{ auth_enabled: boolean; authenticated?: boolean }> {
+    return fetcher<{ auth_enabled: boolean; authenticated?: boolean }>(
+        `${API_BASE_URL}/auth/status`,
+        {},
+        "Failed to fetch auth status"
+    );
 }
 
 export async function login(username: string, password: string): Promise<void> {
@@ -139,7 +192,6 @@ export async function verifyAuth(): Promise<boolean> {
         return false;
     }
 }
-
 
 export async function getNewsletters(): Promise<Newsletter[]> {
     return fetcher<Newsletter[]>(`${API_BASE_URL}/newsletters`, {}, "Failed to fetch newsletters");
@@ -186,17 +238,31 @@ export async function updateSettings(settings: SettingsCreate): Promise<Settings
 }
 
 export async function getImapFolders(): Promise<string[]> {
-    return fetcher<string[]>(`${API_BASE_URL}/imap/folders`, {}, "Failed to fetch IMAP folders", true);
+    return fetcher<string[]>(
+        `${API_BASE_URL}/imap/folders`,
+        {},
+        "Failed to fetch IMAP folders",
+        { returnEmptyArrayOnFailure: true }
+    );
 }
 
-export async function testImapConnection(settings?: SettingsCreate): Promise<{ message: string }> {
-    return fetcher<{ message: string }>(`${API_BASE_URL}/imap/test`, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
+export async function testImapConnection(
+    settings?: SettingsCreate,
+    options: { suppressToast?: boolean } = {}
+): Promise<{ message: string }> {
+    const { suppressToast = true } = options;
+    return fetcher<{ message: string }>(
+        `${API_BASE_URL}/imap/test`,
+        {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: settings ? JSON.stringify(settings) : undefined,
         },
-        body: settings ? JSON.stringify(settings) : undefined,
-    }, "Failed to test IMAP connection");
+        "Failed to test IMAP connection",
+        { suppressToast }
+    );
 }
 
 export async function processEmails(): Promise<{ message: string }> {
@@ -205,7 +271,10 @@ export async function processEmails(): Promise<{ message: string }> {
     }, "Failed to process emails");
 }
 
-export function getFeedUrl(newsletter: Newsletter): string {
+export function getFeedUrl(newsletter: Newsletter, isAuthEnabled: boolean = true): string {
+    if (!isAuthEnabled && newsletter.slug) {
+        return `${API_BASE_URL}/feeds/${newsletter.slug}`;
+    }
     return `${API_BASE_URL}/feeds/${newsletter.id}`;
 }
 
