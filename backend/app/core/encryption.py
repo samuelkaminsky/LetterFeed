@@ -14,15 +14,21 @@ logger = get_logger(__name__)
 ENCRYPTION_PREFIX = "enc_fernet:"
 
 
-def _get_encryption_key() -> bytes:
+def _get_encryption_key(*, allow_fallback: bool = False) -> bytes:
     """Derive a 32-byte key for Fernet from the application's SECRET_KEY."""
-    if settings.production and not (
-        settings.secret_key and settings.secret_key.strip()
+    if (
+        not allow_fallback
+        and settings.production
+        and not (settings.secret_key and settings.secret_key.strip())
     ):
         raise ValueError(
             "SECRET_KEY (LETTERFEED_SECRET_KEY) must be set when running in PRODUCTION mode."
         )
-    secret = settings.secret_key or "default_unsafe_development_key_for_letterfeed"
+    secret = (
+        settings.secret_key.strip()
+        if settings.secret_key and settings.secret_key.strip()
+        else "default_unsafe_development_key_for_letterfeed"
+    )
     # Ensure key is exactly 32-bytes and urlsafe base64 encoded
     hashed = hashlib.sha256(secret.encode()).digest()
     return base64.urlsafe_b64encode(hashed)
@@ -66,7 +72,7 @@ def decrypt_string(value: str | None) -> str | None:
 
     try:
         raw_token = value[len(ENCRYPTION_PREFIX) :]
-        key = _get_encryption_key()
+        key = _get_encryption_key(allow_fallback=True)
         f = Fernet(key)
         decrypted_bytes = f.decrypt(raw_token.encode())
         return decrypted_bytes.decode()

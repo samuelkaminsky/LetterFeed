@@ -128,7 +128,8 @@ def create_access_token(
     data: dict[str, str], expires_delta: timedelta | None = None
 ) -> str:
     """Create a new access token."""
-    if not env_settings.secret_key:
+    secret_key = (env_settings.secret_key or "").strip()
+    if not secret_key:
         raise ValueError("SECRET_KEY is not set, cannot create access tokens.")
     to_encode: dict[str, object] = dict(data)
     if expires_delta:
@@ -136,21 +137,18 @@ def create_access_token(
     else:
         expire = datetime.now(UTC) + timedelta(minutes=15)
     to_encode.update({"exp": expire})
-    return jwt.encode(
-        to_encode, env_settings.secret_key, algorithm=env_settings.algorithm
-    )
+    return jwt.encode(to_encode, secret_key, algorithm=env_settings.algorithm)
 
 
 def _verify_token_for_creds(
     token: str | None, auth_creds: dict[str, str]
 ) -> str | None:
     """Validate a JWT against configured credentials, returning username or None."""
-    if not token or not env_settings.secret_key:
+    secret_key = (env_settings.secret_key or "").strip()
+    if not token or not secret_key:
         return None
     try:
-        payload = jwt.decode(
-            token, env_settings.secret_key, algorithms=[env_settings.algorithm]
-        )
+        payload = jwt.decode(token, secret_key, algorithms=[env_settings.algorithm])
         username = payload.get("sub")
         if not isinstance(username, str) or not username:
             return None

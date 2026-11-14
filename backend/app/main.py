@@ -36,7 +36,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         "worker processes is not supported and will result in stale/inconsistent cache state."
     )
 
-    if settings.production and not settings.secret_key:
+    if settings.production and not (
+        settings.secret_key and settings.secret_key.strip()
+    ):
         logger.warning(
             "SECRET_KEY is not set in production! Login tokens cannot be issued and "
             "stored credentials fall back to an insecure default encryption key. "

@@ -17,7 +17,8 @@ COPY ./app ./app
 
 FROM base
 
-RUN addgroup -S letterfeed && adduser -S -G letterfeed letterfeed \
+RUN apk add --no-cache su-exec \
+    && addgroup -S letterfeed && adduser -S -G letterfeed letterfeed \
     && mkdir -p /data && chown letterfeed:letterfeed /data
 
 WORKDIR /app
@@ -32,6 +33,4 @@ ENV LETTERFEED_GIT_SHA=$GIT_SHA
 ENV LETTERFEED_PRODUCTION=true
 ENV PATH="/app/.venv/bin:$PATH"
 
-USER letterfeed
-
-CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+CMD ["sh", "-c", "chown -R letterfeed:letterfeed /data && exec su-exec letterfeed sh -c 'alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8000'"]
